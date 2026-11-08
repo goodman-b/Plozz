@@ -59,3 +59,10 @@ __pycache__/
 # Translation/review batch inputs are working files, not sources (a stray one
 # was committed at the root once).
 /.review-input-*.json
+
+# Personal fork guard: never commit built artifacts or signing material
+*.ipa
+*.app/
+*.mobileprovision
+*.p12
+DerivedData/
