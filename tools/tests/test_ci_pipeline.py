@@ -92,14 +92,21 @@ class AttributionTests(unittest.TestCase):
         pins = {pin["identity"]: pin["state"] for pin in packages}
         notice = (ROOT / "NOTICE.md").read_text()
         attributions = (ROOT / "Sources/CoreModels/PlozzAttributions.swift").read_text()
-        self.assertIn(pins["aetherengine"]["revision"], notice)
+        if "aetherengine" in pins:
+            self.assertIn(pins["aetherengine"]["revision"], notice)
+        else:
+            # Personal branch: the engine is a local path dependency (a patched copy of that
+            # fork revision), so Package.resolved carries no pin for it. The doc must still
+            # name the base revision and say plainly that the build links a local copy.
+            self.assertIn("55430e28df74ba11b36fea367ad22af0d685a68b", notice)
+            self.assertIn("path dependency", notice)
         for package in packages:
             with self.subTest(package=package["identity"]):
                 ref = package["state"].get("version") or package["state"]["revision"]
                 self.assertIn(package["location"].removesuffix(".git") + "/tree/" + ref, attributions)
         for identity in ("ffmpegbuild", "libdovi"):
             self.assertIn(f'`{pins[identity]["version"]}`', notice)
-        self.assertNotIn("libtruehd", pins)
+        self.assertIn("libtruehd", pins)  # personal branch re-enables the traits
 
     def test_metadata_services_and_bundled_fonts_are_credited(self):
         attributions = (ROOT / "Sources/CoreModels/PlozzAttributions.swift").read_text()

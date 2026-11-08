@@ -122,7 +122,7 @@ public enum PlozzAttributions {
             title: "LibTrueHD",
             detail:
                 "LibTrueHD 3.1.0 supported optional spatial audio rendering in earlier builds "
-                + "and is not linked in this build. "
+                + "and is linked again in this personal branch build. "
                 + "By Quick104 and "
                 + "Vincent Herbst, using truehdd and oamd by Rainbaby and contributors. "
                 + "Source: https://github.com/superuser404notfound/LibTrueHD/tree/3.1.0. "

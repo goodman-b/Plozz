@@ -885,9 +885,9 @@ toggle's desired mode or the receiver's output.
 
 ### Spatial audio
 
-**Height-channel conversion is disabled.** The adapter always requests
-`objectAudioRendering = .off`, and the engine's `TrueHDObjectAudio` and
-`DTSXObjectAudio` package traits are disabled. Neither saved profile preferences,
+**Height-channel conversion is re-enabled in this personal branch**, tvOS only, as APAC 7.1.4.
+Upstream disables it: the adapter requests `objectAudioRendering = .off`, and the engine's
+`TrueHDObjectAudio` and `DTSXObjectAudio` package traits are off by default. Neither saved profile preferences,
 profile transfers nor old device layout values can turn conversion back on.
 The former toggle and layout picker are removed on both platforms. Legacy
 `trueHDAtmosEnabled` JSON values are ignored and omitted when settings are saved.
@@ -1247,7 +1247,7 @@ retention assertions; they do not establish physical-device frame pacing.
 | HDR10 / HLG | ✅ | ✅ |
 | Full-timeline seek | ✅ | ✅ (if not live transcode) |
 | PGS subtitles | ✅ (engine-owned subtitle paths) | ❌ (server burn-in needed) |
-| Spatial audio conversion with heights | ❌ (disabled; ordinary channel audio remains available) | ❌ |
+| Spatial audio conversion with heights | ✅ (personal branch: `TrueHDObjectAudio`+`DTSXObjectAudio`, APAC 7.1.4, tvOS 26+ only) | ❌ |
 | DTS bitstream | ❌ (channel audio uses FLAC/E-AC-3 bridge) | ❌ |
 | TrueHD bitstream | ❌ (channel audio uses FLAC/E-AC-3 bridge) | ❌ |
 

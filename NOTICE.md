@@ -21,7 +21,7 @@ embedded in the app bundle as frameworks (`AetherLibavcodec.framework`,
 
 | Component | Source (pinned) | License |
 |---|---|---|
-| AetherEngine (media engine; "Plozzigen") | `github.com/brandomoore/AetherEngine` @ `5eacfcdc5b76f9c330336810c9adc6d30b673531` | LGPL-3.0 with Apple Store exception |
+| AetherEngine (media engine; "Plozzigen") | local patched copy of `github.com/brandomoore/AetherEngine` (path dependency, fork revision `55430e28df74ba11b36fea367ad22af0d685a68b` + the DTS:X activator fix from upstream 7.56.0) | LGPL-3.0 with Apple Store exception |
 | FFmpeg `libav*` (demux / decode / audio bridge / HLS-fMP4 mux) | `github.com/superuser404notfound/FFmpegBuild` @ `3.11.1` (FFmpeg **n8.1.3**) | **LGPL-2.1-or-later** |
 | dav1d 1.5.4 (AV1 software decoder, separate xcframework) | bundled by FFmpegBuild | BSD-2-Clause (permissive) |
 | zimg 3.0.6 (image scaling and color conversion) | bundled by FFmpegBuild | WTFPL |
@@ -42,16 +42,17 @@ runtime from Plozz's Objective-C/C++ unwind table. Both apps embed and sign
 `AetherEngine.framework`; FFmpeg remains in separate dynamic frameworks.
 
 [LibTrueHD 3.1.0](https://github.com/superuser404notfound/LibTrueHD/tree/3.1.0)
-was linked in earlier builds. Plozz now disables the `TrueHDObjectAudio` and
-`DTSXObjectAudio` package traits; LibTrueHD is no longer resolved or linked.
+was linked in earlier builds. Upstream `main` disables the `TrueHDObjectAudio` and
+`DTSXObjectAudio` package traits; **this personal branch re-enables both, so LibTrueHD is
+resolved and linked in this build.**
 Ordinary channel-audio decoding remains available through FFmpeg. LibTrueHD's C API and
 Apple packaging are MIT, copyright Quick104 and Vincent Herbst; the compiled
 truehd and oamd crates are Apache-2.0, copyright Rainbaby and contributors.
 Both apps ship its unmodified `LICENSE`, `LICENSE-APACHE` and `NOTICE` as
 `LibTrueHDLicense.txt`, `LibTrueHDApacheLicense.txt` and `LibTrueHDNotices.txt`.
 The shared acknowledgements page retains the library's credit and exact source
-tag, explicitly identifying it as no longer linked. These retained notices do
-not imply that height-channel conversion remains available.
+tag. On this personal branch the library is linked and height-channel conversion
+is available; on upstream `main` it is not.
 
 ## FFmpeg license facts
 

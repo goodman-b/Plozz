@@ -258,10 +258,9 @@ let package = Package(
         // Native media-selection IPC uses bounded off-main readers during media-service stalls.
         // Profile 7-only HDR10 fallback preserves other Dolby Vision routes.
         .package(
-            url: "https://github.com/brandomoore/AetherEngine",
-            revision: "55430e28df74ba11b36fea367ad22af0d685a68b",
-            traits: []
-        ),
+            path: "../plozz-engine/AetherEngine",
+// personal build: re-enable object-audio height rendering (see branch notes)
+            ),
         // NOTE: FFmpegBuild (FFmpeg n8.1.x media libraries) and LibDovi (Dolby Vision
         // RPU parser) are transitive dependencies — AetherEngine declares and
         // consumes them. Object-audio conversion traits are intentionally disabled.

@@ -264,6 +264,12 @@ targets:
           - vlc-x-callback
     settings:
       base:
+        # XcodeGen emits no SDKROOT for `platform: tvOS`, so Xcode resolves these targets
+        # in the macOS domain: tvOS destinations are refused and the extension dies as
+        # "unable to resolve product type 'com.apple.product-type.tv-app-extension' for
+        # platform 'macOS'". Name the SDK so the generated project is self-contained.
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: appletvos appletvsimulator
         # ${PLOZZ_ID_SUFFIX} is EMPTY for a normal (canonical) build → the real
         # `com.thatcube.Plozz`. An opt-in per-branch build (tools/deploy-*.sh
         # --branded) sets it to ".<slug>" so that branch installs a SEPARATE app
@@ -323,6 +329,12 @@ targets:
       - path: Sources/TopShelfKit/TopShelfContentBuilder.swift
     settings:
       base:
+        # XcodeGen emits no SDKROOT for `platform: tvOS`, so Xcode resolves these targets
+        # in the macOS domain: tvOS destinations are refused and the extension dies as
+        # "unable to resolve product type 'com.apple.product-type.tv-app-extension' for
+        # platform 'macOS'". Name the SDK so the generated project is self-contained.
+        SDKROOT: appletvos
+        SUPPORTED_PLATFORMS: appletvos appletvsimulator
         PRODUCT_BUNDLE_IDENTIFIER: com.thatcube.Plozz${PLOZZ_ID_SUFFIX}.TopShelf
         PRODUCT_NAME: PlozzTopShelf
         INFOPLIST_FILE: TopShelf/Info.plist
