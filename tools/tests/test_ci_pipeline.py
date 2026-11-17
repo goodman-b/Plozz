@@ -99,7 +99,9 @@ class AttributionTests(unittest.TestCase):
                 self.assertIn(package["location"].removesuffix(".git") + "/tree/" + ref, attributions)
         for identity in ("ffmpegbuild", "libdovi"):
             self.assertIn(f'`{pins[identity]["version"]}`', notice)
-        self.assertNotIn("libtruehd", pins)
+        # personal branch: the object-audio traits re-add LibTrueHD by design (tracked fork
+        # deviation, see FORK-NOTICE.md); upstream's ban targets the withdrawn trait set.
+        self.assertIn("libtruehd", pins)
 
     def test_metadata_services_and_bundled_fonts_are_credited(self):
         attributions = (ROOT / "Sources/CoreModels/PlozzAttributions.swift").read_text()

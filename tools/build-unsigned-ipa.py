@@ -90,7 +90,7 @@ def build_environment(parent, source, build_number):
         "GIT_CONFIG_PARAMETERS": "'safe.bareRepository=all'",
         "XDG_CONFIG_HOME": str(source / ".empty-config"),
         "PLOZZ_BUILD_NUMBER": build_number,
-        "PLOZZ_ID_SUFFIX": ".selfbuild",
+        "PLOZZ_ID_SUFFIX": ".atmos-heights-back",  # personal fork: build the existing installed identity
         "PLOZZ_NAME_SUFFIX": " Self-build",
         "PLOZZ_PAIRING_SERVICE_TYPE": "_plozz-self._tcp",
         "PLOZZ_URL_SCHEME": "plozz-selfbuild",
@@ -114,7 +114,7 @@ def prepare_public_config(source):
 
 def verify_info(info, platform, *, extension=False, app_version=None):
     suffix = ".TopShelf" if extension else ""
-    if info.get("CFBundleIdentifier") != "com.thatcube.Plozz.selfbuild" + suffix:
+    if info.get("CFBundleIdentifier") != "com.thatcube.Plozz.atmos-heights-back" + suffix:
         raise ValueError("Unexpected self-build bundle identity")
     if info.get("CFBundleSupportedPlatforms") != [PLATFORMS[platform][2]]:
         raise ValueError("IPA must contain the selected device platform")

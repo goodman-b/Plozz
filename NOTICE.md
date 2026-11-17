@@ -41,7 +41,7 @@ The pinned fork exports AetherEngine dynamically to separate its decoder
 runtime from Plozz's Objective-C/C++ unwind table. Both apps embed and sign
 `AetherEngine.framework`; FFmpeg remains in separate dynamic frameworks.
 
-[LibTrueHD 3.1.0](https://github.com/superuser404notfound/LibTrueHD/tree/3.1.0)
+[LibTrueHD 3.2.0](https://github.com/superuser404notfound/LibTrueHD/tree/3.2.0)
 was linked in earlier builds. Upstream `main` disables the `TrueHDObjectAudio` and
 `DTSXObjectAudio` package traits; **this personal branch re-enables both, so LibTrueHD is
 resolved and linked in this build.**

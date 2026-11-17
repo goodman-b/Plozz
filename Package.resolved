@@ -1,5 +1,5 @@
 {
-  "originHash" : "fd9d6133d486cdbf85316ddce26b6e620db78adecade842fbf97ac7f5fb00766",
+  "originHash" : "7cf11156bfc9d98dea72468d00cd81da37da10933fe9cfb1a8677dde70d2f37c",
   "pins" : [
     {
       "identity" : "aetherengine",
@@ -25,6 +25,15 @@
       "state" : {
         "revision" : "caff700968700467c089a3f38c8b4180620518b5",
         "version" : "2.2.0"
+      }
+    },
+    {
+      "identity" : "libtruehd",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/superuser404notfound/LibTrueHD",
+      "state" : {
+        "revision" : "12b26e487a2ade918e53380d47f5727883fedafc",
+        "version" : "3.2.0"
       }
     },
     {
