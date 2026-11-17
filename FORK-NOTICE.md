@@ -2,9 +2,11 @@
 
 **This branch is not upstream Plozz and is not endorsed by it.** Parent:
 [`brandomoore/Plozz`](https://github.com/brandomoore/Plozz), branch `atmos-heights-back`.
-Companion engine fork: [`goodman-b/AetherEngine`](https://github.com/goodman-b/AetherEngine),
-branch `atmos-activator-all-beds` (upstream of that: `superuser404notfound/AetherEngine` by
-Vincent Herbst).
+The companion engine fork (`goodman-b/AetherEngine`, branch `atmos-activator-all-beds`) is
+**retired as of the 2026-11-16 upstream sync**: both of its substantive commits (the activator
+fix, cherry-picked as `66352e32`, and the manifest trait flip) are upstream in the current pin
+`055860a0` (the 7.66/7.67 integration line), so the engine is a plain upstream URL dependency
+again.
 
 ## What this branch changes
 
@@ -22,14 +24,15 @@ if #available(tvOS 26.0, *), outputPolicy.isAudible, !outputPolicy.sharesAudioSe
 #endif
 ```
 
-Supporting changes: the engine dependency moves from a pinned `url:`+`revision:` to a local
-`path:` (path dependencies cannot carry SwiftPM `traits:`, so the object-audio traits are enabled
-in the engine fork's manifest instead); `project.yml` gains `SDKROOT`/`SUPPORTED_PLATFORMS` for
-`Plozz` and `PlozzTopShelf`; the CI pipeline guard is extended to accept the path dependency
-rather than relaxed; attribution and playback-engine docs describe the deviation truthfully.
+Supporting changes: the engine dependency stays a pinned `url:`+`revision:` with **added**
+`traits:` - `["DolbyVisionFelCurves", "TrueHDObjectAudio", "DTSXObjectAudio"]` (the two
+object-audio traits are added on top of upstream's own set; dropping `DolbyVisionFelCurves`
+would silently lose FEL conversion); `project.yml` gains `SDKROOT`/`SUPPORTED_PLATFORMS` for
+`Plozz` and `PlozzTopShelf`; attribution and playback-engine docs describe the deviation
+truthfully.
 
 **APAC rather than `.render`** is deliberate: `.render` selects the PCM bed, and that bed carries
-an open mis-mapping report against this engine revision (`AetherEngine#964`; also `Plozz#265`),
+an open mis-mapping report filed against the older 7.53.1 engine line (`AetherEngine#964`; also `Plozz#265`),
 whose author reports APAC placing every channel correctly. **7.1.4** because the target sink is a
 7.1.4-capable soundbar; the engine's 9.1.6 mode folds six heights into four.
 
@@ -64,5 +67,6 @@ Apple silicon — and Xcode 27 has no Intel slice.
 ## Also noted upstream
 
 `NOTICE.md` pins an engine revision that disagrees with `Package.resolved`; reproduced on pristine
-`main` and reported as [Plozz#411](https://github.com/brandomoore/Plozz/issues/411). Not folded
-into this branch — it is upstream's to settle.
+`main` and reported as [Plozz#411](https://github.com/brandomoore/Plozz/issues/411). This branch
+carries its own alignment fix (NOTICE + in-app attribution point at the `Package.resolved` pin),
+which the CI guard requires to pass; upstream's is still upstream's to settle.
