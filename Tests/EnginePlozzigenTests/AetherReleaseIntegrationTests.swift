@@ -252,9 +252,12 @@ final class AetherReleaseIntegrationTests: XCTestCase {
 
     func testTrueHDLegalCreditIncludesSourceAndBothLicenses() throws {
         let credit = try XCTUnwrap(PlozzAttributions.entries.first { $0.title == "LibTrueHD" })
-        XCTAssertTrue(credit.detail.contains("not linked in this build"))
+        // Fork: on this branch LibTrueHD IS linked (object-audio traits enabled). The upstream
+        // assertions encode the disabled state and a stale 3.1.0 tag that contradicts the
+        // Python guard pin-link requirement in this very repo (Plozz#411 family).
+        XCTAssertTrue(credit.detail.contains("linked again in this personal branch"))
         XCTAssertTrue(credit.detail.contains(
-            "https://github.com/superuser404notfound/LibTrueHD/tree/3.1.0"
+            "https://github.com/superuser404notfound/LibTrueHD/tree/3.2.0"
         ))
         XCTAssertTrue(credit.detail.contains("Quick104"))
         XCTAssertTrue(credit.detail.contains("Rainbaby"))
