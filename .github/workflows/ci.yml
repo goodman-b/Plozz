@@ -95,6 +95,7 @@ jobs:
 
   app-build:
     name: Build tvOS simulator app
+    if: always()  # fork: verify lanes stay live while an upstream guards failure (Plozz CI is red on main) is open
     needs: guards
     runs-on: xcode-27
     timeout-minutes: 60
@@ -150,6 +151,7 @@ jobs:
 
   package-tests:
     name: Full package test matrix
+    if: always()  # fork: verify lanes stay live while an upstream guards failure (Plozz CI is red on main) is open
     needs: guards
     runs-on: xcode-27
     timeout-minutes: 80
@@ -189,6 +191,7 @@ jobs:
 
   hosted-focus:
     name: App-hosted focus tests
+    if: always()  # fork: verify lanes stay live while an upstream guards failure (Plozz CI is red on main) is open
     needs: guards
     runs-on: xcode-27
     timeout-minutes: 200
