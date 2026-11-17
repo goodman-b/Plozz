@@ -26,7 +26,7 @@ class UnsignedIPATests(unittest.TestCase):
 
     def info(self, platform="ios", extension=False):
         return {
-            "CFBundleIdentifier": "com.thatcube.Plozz.selfbuild" + (".TopShelf" if extension else ""),
+            "CFBundleIdentifier": "com.thatcube.Plozz.atmos-heights-back" + (".TopShelf" if extension else ""),
             "CFBundleExecutable": "TopShelf" if extension else "Plozz",
             "CFBundleSupportedPlatforms": [ipa.PLATFORMS[platform][2]],
             "CFBundleShortVersionString": "1.0", "CFBundleVersion": "123",
@@ -66,7 +66,7 @@ class UnsignedIPATests(unittest.TestCase):
                     "PLOZZ_RELEASE_CHANNEL", "XCODE_XCCONFIG_FILE", "TMDB_BEARER_TOKEN", "GH_TOKEN"]:
             self.assertNotIn(key, env)
         self.assertEqual(env["APPLE_BUILD_LEASE_ID"], "owned")
-        self.assertEqual(env["PLOZZ_ID_SUFFIX"], ".selfbuild")
+        self.assertEqual(env["PLOZZ_ID_SUFFIX"], ".atmos-heights-back")
         self.assertEqual(env["XDG_CONFIG_HOME"], str(self.root / ".empty-config"))
         self.assertEqual(env["PLOZZ_BUILD_NUMBER"], "123")
 

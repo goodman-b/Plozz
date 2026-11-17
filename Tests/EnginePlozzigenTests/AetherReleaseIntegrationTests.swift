@@ -4,6 +4,15 @@ import FeaturePlayback
 import XCTest
 @testable import EnginePlozzigen
 
+// Fork semantics (atmos-heights-back): on tvOS 26+ an audible, non-session-sharing on-demand
+// load renders object audio as APAC 7.1.4; every other platform/path keeps upstream `.off`.
+private func forkExpectedObjectAudioRendering(audible: Bool = true, shares: Bool = false) -> ObjectAudioRendering {
+    #if os(tvOS)
+    if #available(tvOS 26.0, *), audible, !shares { return .apac(.l714) }
+    #endif
+    return .off
+}
+
 final class AetherReleaseIntegrationTests: XCTestCase {
     func testFELConversionRequiresHostOptInAndPreservesMELWhenOff() {
         XCTAssertTrue(AetherEngine.OptionalComponent.dolbyVisionFelCurves.isBuiltIn)
@@ -144,7 +153,7 @@ final class AetherReleaseIntegrationTests: XCTestCase {
         XCTAssertFalse(options.isLive)
         XCTAssertTrue(options.matchContentEnabled)
         XCTAssertEqual(options.audioBridgeMode, .lossless)
-        XCTAssertEqual(options.objectAudioRendering, .off)
+        XCTAssertEqual(options.objectAudioRendering, forkExpectedObjectAudioRendering())
     }
 
     @MainActor
@@ -164,7 +173,7 @@ final class AetherReleaseIntegrationTests: XCTestCase {
                 XCTAssertFalse(options.preferDualLayerDolbyVision)
                 XCTAssertFalse(options.foldsDolbyVisionFEL)
                 XCTAssertEqual(options.dolbyVisionHandling, .profile7MELOnly)
-                XCTAssertEqual(options.objectAudioRendering, .off)
+                XCTAssertEqual(options.objectAudioRendering, forkExpectedObjectAudioRendering())
             }
         }
     }
@@ -188,7 +197,7 @@ final class AetherReleaseIntegrationTests: XCTestCase {
                 let options = PlozzigenVideoEngine.onDemandLoadOptions(
                     losslessAudioEnabled: lossless, readAhead: buffer
                 )
-                XCTAssertEqual(options.objectAudioRendering, .off)
+                XCTAssertEqual(options.objectAudioRendering, forkExpectedObjectAudioRendering())
                 XCTAssertEqual(options.audioBridgeMode, lossless ? .lossless : .surroundCompat)
                 XCTAssertEqual(options.sessionCacheByteBudget, buffer == .automatic ? nil : Int.max)
                 XCTAssertTrue(options.matchContentEnabled)
@@ -324,5 +333,12 @@ final class AetherReleaseIntegrationTests: XCTestCase {
         XCTAssertEqual(menu[2].profile, "MA + DTS:X IMAX")
         XCTAssertTrue(menu[2].isDTSX)
         XCTAssertTrue(menu[3].isDTSX)
+    }
+
+    func testForkEnablesHeightRenderingForAudibleOnDemandLoads() {
+        let options = PlozzigenVideoEngine.onDemandLoadOptions(
+            losslessAudioEnabled: true, outputPolicy: LiveChannelOutputPolicy(isAudible: true)
+        )
+        XCTAssertEqual(options.objectAudioRendering, forkExpectedObjectAudioRendering())
     }
 }

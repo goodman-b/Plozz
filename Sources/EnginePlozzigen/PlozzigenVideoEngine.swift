@@ -1142,7 +1142,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
         // build 070). tvOS only - iOS/AirPods keep upstream behaviour, where PCM is the form the
         // engine actually measured. APAC is forced instead of .render because .render picks the
         // PCM bed, and that bed has an OPEN, still-unconfirmed mis-mapping report
-        // (AetherEngine#964, filed against 7.53.1,, Denon 7.1.4; Plozz#265) - while that
+        // (AetherEngine#964, filed against 7.53.1, Denon 7.1.4; Plozz#265) - while that
         // reporter states APAC placed every channel correctly. 7.1.4 because the engine renders
         // DTS:X into 7.1.4 or 9.1.6 only, and the sink here is a 7.1.4 soundbar.
         #if os(tvOS)
