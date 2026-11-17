@@ -74,9 +74,10 @@ public actor ExternalTitleMetadataResolver {
 
     public func resolve(
         item: MediaItem,
-        regionCode: String
+        regionCode: String,
+        language: String = "en"
     ) async -> ExternalTitleMetadata {
-        let query = MetadataQuery(item).seriesScoped
+        let query = MetadataQuery(item).seriesScoped.forMetadataLanguage(language)
         var requested: Set<MetadataField> = [
             .overview,
             .genres,
@@ -95,7 +96,9 @@ public actor ExternalTitleMetadataResolver {
             .providerID(ProviderIDNamespace.imdb.canonicalKey),
         ]
         requested.formUnion(DetailMetadataResolver.missingFields(in: item))
-        let present = Self.presentFields(in: item)
+        let refreshable = DetailMetadataResolver.refreshableTextFields(in: item, isDiscoverySeed: true)
+        requested.formUnion(refreshable)
+        let present = Self.presentFields(in: item).subtracting(refreshable)
         async let enrichment = pipeline.enrich(
             query,
             present: present,
@@ -139,6 +142,7 @@ public actor ExternalTitleMetadataResolver {
         availabilityTasks[key] = task
         let resolved = await task.value
         availabilityTasks[key] = nil
+        guard resolved.releaseDatesAvailable != false else { return resolved }
         availabilityCache[key] = CachedAvailability(
             value: resolved,
             expiresAt: Date().addingTimeInterval(

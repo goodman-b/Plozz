@@ -7,6 +7,7 @@ import CoreUI
 import CrashReporting
 import FeatureHomeCore
 import FeatureHome
+import FeatureLiveTV
 import FeatureMusic
 import FeaturePlayback
 import MediaTransportCore
@@ -123,6 +124,7 @@ struct SettingsNavigationShell<Navigation: View>: View {
 }
 
 struct MainTabView: View {
+    private var navigationTitles = NavigationTitles()
     /// Stable identifiers for the root tabs, used to persist and restore the
     /// selected tab across MainTabView being rebuilt (see `selectedTab`).
     /// The pending person route, visible ONLY to the tab that is showing.
@@ -141,10 +143,11 @@ struct MainTabView: View {
             case .home:
                 switch activeLibraryNavigationDestination {
                 case .home, .library, .allLibraries: return true
-                case .watchlist, .discover, .search, .music, .settings: return false
+                case .watchlist, .upcoming, .discover, .search, .music, .settings: return false
                 case .liveTV: return false
                 }
             case .watchlist: return activeLibraryNavigationDestination == .watchlist
+            case .upcoming: return activeLibraryNavigationDestination == .upcoming
             case .discover: return activeLibraryNavigationDestination == .discover
             case .search: return activeLibraryNavigationDestination == .search
             case .liveTV: return activeLibraryNavigationDestination == .liveTV
@@ -156,14 +159,14 @@ struct MainTabView: View {
     }
 
     private enum MainTab: String {
-        case home, watchlist, discover, search
+        case home, watchlist, upcoming, discover, search
         case liveTV
         case music, settings
     }
 
     private var homeTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Home"),
+            title: navigationTitles(NavigationLibraryLayout.homeKey, default: Text("Home")),
             systemImage: "house.fill",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -171,7 +174,7 @@ struct MainTabView: View {
 
     private var searchTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Search"),
+            title: navigationTitles(NavigationLibraryLayout.searchKey, default: Text("Search")),
             systemImage: "magnifyingglass",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -179,7 +182,7 @@ struct MainTabView: View {
 
     private var watchlistTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Watchlist"),
+            title: navigationTitles(NavigationLibraryLayout.watchlistKey, default: Text("Watchlist")),
             systemImage: "bookmark.fill",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -187,7 +190,7 @@ struct MainTabView: View {
 
     private var musicTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Music"),
+            title: navigationTitles(NavigationLibraryLayout.musicKey, default: Text("Music")),
             systemImage: "music.note",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -195,7 +198,7 @@ struct MainTabView: View {
 
     private var liveTVTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Live TV"),
+            title: navigationTitles(NavigationLibraryLayout.liveTVKey, default: Text("Live TV")),
             systemImage: "antenna.radiowaves.left.and.right",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -203,7 +206,7 @@ struct MainTabView: View {
 
     private var settingsTabLabel: some View {
         RootNavigationTabLabel(
-            title: Text("Settings"),
+            title: navigationTitles(NavigationLibraryLayout.settingsKey, default: Text("Settings")),
             systemImage: "gearshape.fill",
             usesCompactSidebarText: navigationStyle == .sidebar
         )
@@ -412,6 +415,8 @@ struct MainTabView: View {
     /// type-checker's budget that one extra computed value in it fails the
     /// build outright.
     let homeRuntime: HomeTabRuntime
+    var upcomingAccounts: @MainActor () -> [ResolvedAccount] = { [] }
+    var upcomingWatchlist: @MainActor () -> [MediaItem] = { [] }
     let isAccountIncludedInActiveProfile: (String) -> Bool
     let onSetAccountIncluded: (String, Bool) -> Void
     let onSaveProfile: (ProfileDraft) -> Void
@@ -541,6 +546,7 @@ struct MainTabView: View {
     /// report it without any of them knowing about the chrome.
     @State private var navigationChrome = NavigationChromeModel()
     @State private var nativeSidebarFocus = NavigationDestinationFocusHandoff()
+    @State private var nativeSidebarScroll = TopNavigationScroll()
     private var railLibraries: [AggregatedLibrary] { navigationStyleModel.contentLibraries }
     /// Whether the rail's library list reflects a real answer yet (snapshot or
     /// discovery), as opposed to the empty value it starts at.
@@ -755,7 +761,10 @@ struct MainTabView: View {
                     nativeSidebarFocus.cancel()
                     openProfileSwitcher()
                 case let .content(content):
-                    if content != activeLibraryNavigationDestination(in: destinations) {
+                    let reselectsHome = content == .home
+                        && content == activeLibraryNavigationDestination(in: destinations)
+                    if reselectsHome { nativeSidebarScroll.scrollToTop() }
+                    if reselectsHome || content != activeLibraryNavigationDestination(in: destinations) {
                         nativeSidebarFocus.begin(content)
                     }
                     libraryNavigationSelection.wrappedValue = content
@@ -770,6 +779,7 @@ struct MainTabView: View {
         switch destination {
         case .home, .library, .allLibraries: return .home
         case .watchlist: return .watchlist
+        case .upcoming: return .upcoming
         case .discover: return .discover
         case .search: return .search
         case .liveTV: return .liveTV
@@ -815,6 +825,7 @@ struct MainTabView: View {
         switch tab {
         case .home: return .home
         case .watchlist: return .watchlist
+        case .upcoming: return .upcoming
         case .discover: return .discover
         case .search: return .search
         case .liveTV: return .liveTV
@@ -923,7 +934,8 @@ struct MainTabView: View {
             discoveredAccountIDs: navigationStyleModel.discoveredAccountIDs,
             disabledLibraryKeys: homeVisibility.visibility.disabledKeys,
             hasDiscoverySearch: seer.isConfigured,
-            hasWatchlistItems: navigationStyleModel.hasWatchlistItems
+            hasWatchlistItems: navigationStyleModel.hasWatchlistItems,
+            hasWatchlistTitles: navigationStyleModel.hasWatchlistTitles
         )
     }
 
@@ -937,6 +949,9 @@ struct MainTabView: View {
     private func refreshWatchlistNavigation() {
         if let hasItems = watchlistHasItems() {
             navigationStyleModel.hasWatchlistItems = hasItems
+            navigationStyleModel.hasWatchlistTitles = upcomingWatchlist().contains {
+                $0.kind == .movie || $0.kind == .series
+            }
         }
     }
 
@@ -1200,16 +1215,18 @@ struct MainTabView: View {
             return HomeTab(
                 root: root,
                 accounts: accounts,
+                upcomingAccounts: upcomingAccounts,
+                upcomingWatchlist: upcomingWatchlist,
                 isProfileAuthorized: isLiveTVProfileAuthorized,
                 configuredServerCount: displayAccounts.count,
                 libraryPreferencesNamespace: liveTVPreferencesNamespace,
                 detailSnapshotCache: detailSnapshotCache,
                 authenticatedHTTPResolver: authenticatedHTTPResolver,
                 seer: seer,
-                activeSeerrIdentity: activeProfile.seerrRequestIdentity,
-                activeSeerrUserName: activeProfile.seerrUserName,
+                activeSeerrIdentity: seer.requestIdentity,
+                activeSeerrUserName: seer.requestAccountName,
                 confirmAdminRequest: profiles.count > 1
-                    && activeProfile.seerrRequestIdentity == .admin,
+                    && seer.needsAdminConfirmation,
                 homeVisibility: homeVisibility,
                 homeLayoutStore: homeLayoutStore,
                 homeContentStore: homeContentStore,
@@ -1283,10 +1300,10 @@ struct MainTabView: View {
                 detailSnapshotCache: detailSnapshotCache,
                 authenticatedHTTPResolver: authenticatedHTTPResolver,
                 seer: seer,
-                activeSeerrIdentity: activeProfile.seerrRequestIdentity,
-                activeSeerrUserName: activeProfile.seerrUserName,
+                activeSeerrIdentity: seer.requestIdentity,
+                activeSeerrUserName: seer.requestAccountName,
                 confirmAdminRequest: profiles.count > 1
-                    && activeProfile.seerrRequestIdentity == .admin,
+                    && seer.needsAdminConfirmation,
                 homeVisibility: homeVisibility,
                 behavior: subtitleBehaviorModel.settings,
                 style: subtitleStyleModel.style,
@@ -1398,6 +1415,10 @@ struct MainTabView: View {
             return AnyView(homeTabContent(
                 root: .discover, id: "\(homeScopeKey)|discover", isActive: isActive
             ))
+        case .upcoming:
+            return AnyView(homeTabContent(
+                root: .upcoming, id: "\(homeScopeKey)|upcoming", isActive: isActive
+            ))
         case .liveTV:
             return AnyView(LiveTVShellDestination(
                 isActive: isActive,
@@ -1440,9 +1461,14 @@ struct MainTabView: View {
             return AnyView(searchTabLabel)
         case .watchlist:
             return AnyView(watchlistTabLabel)
+        case .upcoming:
+            return AnyView(RootNavigationTabLabel(
+                title: navigationTitles(NavigationLibraryLayout.upcomingKey, default: Text("Upcoming")),
+                systemImage: "calendar", usesCompactSidebarText: navigationStyle == .sidebar
+            ))
         case .discover:
             return AnyView(RootNavigationTabLabel(
-                title: Text("Discover"), systemImage: "sparkles",
+                title: navigationTitles(NavigationLibraryLayout.discoverKey, default: Text("Discover")), systemImage: "sparkles",
                 usesCompactSidebarText: navigationStyle == .sidebar
             ))
         case .liveTV:
@@ -1456,7 +1482,8 @@ struct MainTabView: View {
                 return AnyView(EmptyView())
             }
             return AnyView(Self.navigationLibraryLabel(
-                libraryEntry, usesCompactSidebarText: navigationStyle == .sidebar
+                libraryEntry, usesCompactSidebarText: navigationStyle == .sidebar,
+                customName: navigationStyleModel.libraryLayout.customNames[libraryEntry.key]
             ))
         }
     }
@@ -1549,7 +1576,9 @@ struct MainTabView: View {
                             libraryEntry: entriesByDestination[destination],
                             libraries: browsableLibraries
                         )
-                    ).tvNavigationExitProtectionContent())
+                    )
+                    .environment(\.plozzTopNavigationScroll, destination == .home ? nativeSidebarScroll : nil)
+                    .tvNavigationExitProtectionContent())
                 } label: {
                     rootNavigationLabel(
                         for: destination, libraryEntry: entriesByDestination[destination]
@@ -1599,9 +1628,13 @@ struct MainTabView: View {
                 .allowsHitTesting(!showsLiveTV)
                 .accessibilityHidden(showsLiveTV)
 
-            RetainedLiveTVDestination(isActive: showsLiveTV) {
+            RetainedLiveTVDestination(
+                isActive: showsLiveTV,
+                preloads: activeNavigationDestinations.contains(.liveTV) && isLiveTVProfileAuthorized()
+            ) {
                 LiveTVShellDestination(
                     isActive: showsLiveTV,
+                    preloadsCatalog: activeNavigationDestinations.contains(.liveTV) && isLiveTVProfileAuthorized(),
                     profileID: activeProfile.id,
                     preferencesNamespace: liveTVPreferencesNamespace,
                     accountsProviders: accountsProviders,
@@ -1636,6 +1669,10 @@ struct MainTabView: View {
         case .discover:
             return AnyView(homeTabContent(
                 root: .discover, id: "\(homeScopeKey)|discover", isActive: true
+            ))
+        case .upcoming:
+            return AnyView(homeTabContent(
+                root: .upcoming, id: "\(homeScopeKey)|upcoming", isActive: true
             ))
         case .search:
             return AnyView(searchTabContent())
@@ -1710,9 +1747,11 @@ struct MainTabView: View {
     /// Native navigation label for a real or synthetic library destination.
     static func navigationLibraryLabel(
         _ entry: NavigationRailLibraryEntry,
-        usesCompactSidebarText: Bool = true
+        usesCompactSidebarText: Bool = true,
+        customName: String? = nil
     ) -> some View {
-        let title = entry.library?.library.displayName ?? Text(AllLibrariesBrowse.title)
+        let title = customName.map { Text(verbatim: $0) }
+            ?? entry.library?.library.displayName ?? Text(AllLibrariesBrowse.title)
         let symbol = entry.library?.library.navigationSymbolName
             ?? "square.stack.3d.up.fill"
         // Native tabs extract one title; sibling Text views are discarded.
@@ -1908,6 +1947,7 @@ struct MainTabView: View {
             resumePrompt: $resumePrompt,
             pendingPlaylistOrigin: $pendingPlaylistOrigin,
             accounts: accounts,
+            metadataLanguage: { (profileSettings.appLanguageModel.language.locale ?? .current).identifier },
             networkFileResolver: networkFileResolver,
             authenticatedHTTPResolver: authenticatedHTTPResolver,
             offlinePlaybackResolver: offlinePlaybackResolver,
@@ -2018,6 +2058,14 @@ struct MainTabView: View {
         .environment(transparencyModel)
         .environment(heroSettingsModel)
         .environment(shareScanStatusModel)
+        .onChange(of: showsMusicDestination, initial: true) { _, available in
+            guard available, !hasChosenNavigationDestination, !settingsEntryRequested,
+                  navigationAvailability.prefersMusic else { return }
+            recordedProcessLaunch = Self.processLaunch
+            selectedTabRaw = NavigationRailDestination.music.storageValue
+            railSelectionRaw = NavigationRailDestination.music.storageValue
+            libraryNavigationEntryOverride = .music
+        }
         .task(id: accounts.map(\.account.id)) {
             onWarmIdentityIndex()
         }
@@ -2049,6 +2097,13 @@ struct MainTabView: View {
             )
         }
         .mediaItemActionHandler(mediaItemActionHandler)
+        .liveTVGuideAutoUpdate(
+            accountIDs: accounts.map(\.account.id),
+            authorizationID: accountsProviders.liveTVAuthorizationID,
+            isAuthorized: activeNavigationDestinations.contains(.liveTV) && isLiveTVProfileAuthorized(),
+            namespace: liveTVPreferencesNamespace,
+            resolver: accountsProviders.liveTVProviderResolver()
+        )
     }
 
     @MainActor

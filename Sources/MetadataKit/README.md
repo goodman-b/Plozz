@@ -32,7 +32,7 @@ load-bearing.
   library is enriched with a one-time burst of calls, then effectively
   none.
 - `MetadataHTTP` — internal lightweight `URLSession` transport for enrichment.
-- `DetailMetadataResolver` — fills missing cast, directors, writers, producers, composers, studios,
+- `DetailMetadataResolver` — fills missing descriptions, cast, directors, writers, producers, composers, studios,
   genres and confirmed title facts after a provider's full detail response, using the same pipeline on
   tvOS and iOS/iPadOS. Cast and crew are separate gaps: an existing cast does not
   hide missing directors, and adding cast never erases server crew. Source
@@ -71,6 +71,41 @@ load-bearing.
   Series facts never propagate to seasons/episodes or personal-video mode.
   Artwork, playable identity, file/stream facts and Common Sense are not filled
   by this resolver.
+  Detail pages pass the effective UI/profile locale to text enrichment, including
+  text refresh for external/discovery details. Existing feed text is a fallback,
+  not authoritative server text. Known externally attributed share metadata is
+  refreshed only in the detail presentation; shared catalog records remain unchanged.
+  TMDB detail, episode, credits and matching requests carry that language;
+  when a localized title search misses an English release alias, identity lookup
+  retries the English search with the same exact-title/year checks. Detail text
+  still comes from the requested-language endpoint.
+  Provider-result keys and detail snapshots separate language variants. Query
+  copies retain language when promoting series IDs or threading matched IDs.
+  Providers without requested-language text support cannot fill descriptions,
+  genres, titles or taglines for non-English requests; their artwork and other
+  capabilities remain available. Once all applicable translated sources have been
+  tried, unresolved text can fall back to English/original metadata. Server/NFO text is never
+  translated or replaced. Child descriptions use scoped providers, not a series
+  description returned by an unscoped adapter. The independent English-only
+  `OverviewRouter` no longer races library-detail enrichment.
+  Its keyless Wikipedia overview fallback now participates in the same
+  ordered pipeline for movie/series gaps; Wikipedia artwork remains idle-only.
+  Retained detail models update their language in place, discard late old-language
+  work and refill gaps from native metadata, not previously enriched text.
+  TheTVDB requests its catalog language IDs (including `pt` for Brazilian
+  Portuguese and `zhtw` for Traditional Chinese) for detail text and admitted discovery
+  candidates, with at most four translation requests in flight and a four-second
+  translation budget that retains original feed text on timeout.
+  Wikipedia follows the matched English article's language link,
+  including Chinese/Serbian script variants, rather than searching for a different
+  work or person. Person biographies preserve server priority and refresh external
+  prose when the selected language changes; in-player biography caches separate languages.
+  Home discovery requests, task identities and persisted hero selections retain
+  the full language, including regional/script distinctions, so a language switch
+  cannot reuse the previous language's discovery snapshot.
+  This does not translate existing server metadata or shared share-scanner records.
+  AniList and TVmaze retain their available original/English text. Selecting a language cannot guarantee
+  translated descriptions when the server or external service has no such text.
 - `HeroDiscoveryProviding` — separate candidate-feed seam for TMDB,
   AniList, TheTVDB, and TVmaze. It does not call Trakt.
 - `HeroDiscoveryService` — bounded, coalesced public-feed reads, provider-level
@@ -114,6 +149,21 @@ API ignores it. Movies never send TV-only parameters. Combined-episode files
 do not use single-episode community markers. Empty/episode-list/version-list
 responses yield no timestamps; open ends need a known runtime, and negative,
 reversed or out-of-runtime segments are discarded.
+
+TheIntroDB arrays represent separate intervals, not competing candidates to
+collapse into one late window. IntroDB's explicit `post_credits` interval is
+non-skippable: it can shorten or split that source's overlapping credits, never
+extend them. Malformed or zero-start scene reports are ignored without losing
+valid markers. A finite credits end alone does not establish a scene or permit
+extending the range. Server-first, per-kind source precedence and optional
+fallback requests remain unchanged; marker count is not a confidence score.
+
+Real-media checks against Plex, Jellyfin, both community APIs, and decoded
+ending frames found separate credits/scene windows in Iron Man, Deadpool and
+The Avengers, and ordinary closing credits in Inception. They also found
+misplaced server markers, shifted community timing, and a zero-start community
+scene. These checks validate range-preserving behavior, not universal marker
+accuracy or compatibility between different releases of a title.
 
 ## Discovery sources
 
@@ -175,11 +225,13 @@ Already identified, owned, unsupported, and personal-media items skip this work.
   endpoint, candidate-image download, SVG renderer, or contrast-analysis pass.
   Better-ranked originals can improve dark-background legibility, but metadata
   ranking does not guarantee contrast. Server artwork and configured source
-  priority remain authoritative. External logos prefer the active app language
-  (including profile overrides), then untagged artwork, English, and other
-  languages; ratings break ties. Regional language tags use the image API's
-  language code. Logo URL and presentation caches include that language, so
-  switching languages cannot reuse a previously selected English logo. This
+  priority remain authoritative. TMDB logos prefer the active app language
+  (including profile overrides), then untagged artwork and English; ratings break
+  ties. Logos tagged with unrelated languages are rejected so the remaining
+  providers or the hero's text title can supply the fallback. Regional language
+  tags use the image API's language code. Logo URL and presentation caches include that language, so
+  switching languages cannot reuse a previously selected English logo. Older
+  language-unrestricted logo selections are not reused. This
   versions only logo keys, not posters/backdrops, and never translates or
   replaces server titles, taglines, or synopses.
 - **Portrait hero artwork is opt-in.** Compact mobile heroes prefer a

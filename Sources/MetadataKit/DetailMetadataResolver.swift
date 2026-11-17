@@ -16,8 +16,10 @@ public actor DetailMetadataResolver {
         self.settingsStore = settingsStore
     }
 
-    public func resolve(_ item: MediaItem) async -> MetadataEnrichment {
-        let missing = Self.missingFields(in: item)
+    public func resolve(
+        _ item: MediaItem, language: String = Locale.current.identifier
+    ) async -> MetadataEnrichment {
+        let missing = Self.missingFields(in: item).union(Self.refreshableTextFields(in: item))
         guard !missing.isEmpty, !Task.isCancelled else { return MetadataEnrichment() }
         let capabilities = Set(missing.compactMap(MetadataCapability.covering))
         let providers = ProductionMetadataProviders.make(
@@ -29,7 +31,10 @@ public actor DetailMetadataResolver {
             providers: providers,
             config: MetadataEnrichmentConfig.resolved().merged(withUserOverrides: settingsStore.load())
         )
-        return await pipeline.enrich(Self.metadataQuery(for: item), requesting: missing, tier: .foregroundFill)
+        return await pipeline.enrich(
+            Self.metadataQuery(for: item).forMetadataLanguage(language),
+            requesting: missing, tier: .foregroundFill
+        )
     }
 
     public func trailers(for item: MediaItem, limit: Int = 6) async -> [MediaItem] {
@@ -71,6 +76,9 @@ public actor DetailMetadataResolver {
         default: return []
         }
         var missing = Set<MetadataField>()
+        if item.overview?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+            missing.insert(.overview)
+        }
         if item.cast.isEmpty { missing.insert(.cast) }
         let roles = Set(item.people.compactMap { MediaCrewRole(kind: $0.kind) })
         if !roles.contains(.director) { missing.insert(.directors) }
@@ -91,9 +99,41 @@ public actor DetailMetadataResolver {
         return missing
     }
 
-    public static func applying(_ enrichment: MetadataEnrichment, to item: MediaItem) -> MediaItem {
+    /// Catalog enrichment is not server/NFO curation. Refresh its display copy
+    /// for the current locale without changing the shared catalog or identity.
+    public static func refreshableTextFields(in item: MediaItem, isDiscoverySeed: Bool = false) -> Set<MetadataField> {
+        let external: Set<MetadataSource> = [.tvdb, .tmdb, .tvmaze, .wikipedia, .wikidata, .anilist, .kitsu, .mal, .omdb, .trakt, .wetrakr]
+        var fields: [MetadataField] = [.overview, .genres, .taglines]
+        if item.kind == .movie || item.kind == .series || item.kind == .video { fields.append(.title) }
+        return Set(fields.filter { field in
+            if let source = item.metadataProvenance[field]?.source { return external.contains(source) }
+            return isDiscoverySeed && item.sourceAccountID == nil && !item.locallyValidatedPlayableSource
+        })
+    }
+
+    public static func applying(
+        _ enrichment: MetadataEnrichment, to item: MediaItem,
+        refreshExternalText: Bool = false, isDiscoverySeed: Bool = false
+    ) -> MediaItem {
         var copy = item
-        let missing = missingFields(in: item)
+        let missing = missingFields(in: item).union(
+            refreshExternalText ? refreshableTextFields(in: item, isDiscoverySeed: isDiscoverySeed) : []
+        )
+        if missing.contains(.title), let title = enrichment.title,
+           !title.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.title = title.value
+            copy.metadataProvenance.set(title, for: .title)
+        }
+        if missing.contains(.taglines), let tagline = enrichment.tagline,
+           !tagline.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.taglines = [tagline.value]
+            copy.metadataProvenance.set(tagline, for: .taglines)
+        }
+        if missing.contains(.overview), let overview = enrichment.overview,
+           !overview.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            copy.overview = overview.value
+            copy.metadataProvenance.set(overview, for: .overview)
+        }
         for (field, people) in [
             (MetadataField.cast, enrichment.cast),
             (.directors, enrichment.directors),

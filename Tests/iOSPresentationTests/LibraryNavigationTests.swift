@@ -12,6 +12,62 @@ import XCTest
 
 @MainActor
 final class LibraryNavigationTests: XCTestCase {
+    func testUpcomingVisibilityFollowsActiveProfileAndAllowsExplicitShowWithoutSources() throws {
+        let app = try makeApp()
+        XCTAssertTrue(PlozziOSTabShell.configuredDestinations(appModel: app).contains(.upcoming))
+        let profile = app.profiles.add(name: "Live only", isAwaitingSetup: false)
+        app.profiles.setActiveAccountIDs([], for: profile.id)
+        app.profiles.select(profile.id)
+        app.refreshActiveProfileSettings()
+        app.accountsProviders.reloadAccounts()
+        XCTAssertFalse(PlozziOSTabShell.configuredDestinations(appModel: app).contains(.upcoming))
+
+        let navigation = app.settings.navigation
+        let available = NavigationDestinationDefaults.iOS
+        navigation.automaticallyHiddenKeys = NavigationDestinationDefaults.iOSAutomaticallyHiddenKeys(
+            available: available, hasUpcomingContent: false
+        )
+        let sections = navigation.librarySections(available: available)
+        let key = NavigationLibraryLayout.upcomingKey
+        navigation.applyLibrarySections(
+            .init(enabled: sections.enabled + [key], disabled: sections.disabled.filter { $0 != key }),
+            available: available
+        )
+        XCTAssertTrue(PlozziOSTabShell.configuredDestinations(appModel: app).contains(.upcoming))
+        app.refreshActiveProfileSettings()
+        XCTAssertTrue(PlozziOSTabShell.configuredDestinations(appModel: app).contains(.upcoming))
+        app.settings.navigation.resetLibraryLayout()
+        XCTAssertFalse(PlozziOSTabShell.configuredDestinations(appModel: app).contains(.upcoming))
+    }
+
+    func testNativeNavigationNamesUpdateWithoutChangingDestinations() async throws {
+        let app = try makeApp()
+        app.settings.navigation.showsWatchlist = true
+        let destinations = PlozziOSTabShell.configuredDestinations(appModel: app)
+        try await withTabs(app: app) { tabs, window in
+            for (key, name) in [
+                (NavigationLibraryLayout.homeKey, "Start"),
+                (NavigationLibraryLayout.downloadsKey, "Offline"),
+                (NavigationLibraryLayout.searchKey, "Find"),
+                (NavigationLibraryLayout.watchlistKey, "Queue")
+            ] {
+                app.settings.navigation.renameDestination(key, to: name, homeVisibility: app.settings.homeVisibility)
+            }
+            try await self.waitUntil(window: window) {
+                Set(self.tabTitles(tabs)) == Set(["Start", "Offline", "Find", "Queue"])
+            }
+            XCTAssertEqual(PlozziOSTabShell.configuredDestinations(appModel: app), destinations)
+            app.settings.homeVisibility.setHomeRowName("Saved", for: .global(.watchlist))
+            try await self.waitUntil(window: window) { self.tabTitles(tabs).contains("Saved") }
+            for key in destinations.map(\.navigationKey) {
+                app.settings.navigation.renameDestination(key, to: "", homeVisibility: app.settings.homeVisibility)
+            }
+            try await self.waitUntil(window: window) {
+                Set(self.tabTitles(tabs)) == Set(["Home", "Downloads", "Search", "Watchlist"])
+            }
+        }
+    }
+
     func testNewProfileImmediatelyShowsTwentyCachedServersWhileRefreshIsBlocked() async throws {
         let fixture = LibraryNavigationFixture(libraryCount: 6)
         let app = try makeApp(fixture: fixture, extraServers: 18)
@@ -586,6 +642,8 @@ final class LibraryNavigationTests: XCTestCase {
             let host = UIHostingController(rootView:
                 makeShell(app: app)
                 .environment(app)
+                .environment(app.settings.navigation)
+                .environment(app.settings.homeVisibility)
                 .environment(HeroTrailerController())
                 .environment(PlozziOSSidebarGeometryModel())
                 .environment(\.themePalette, .dark)

@@ -76,6 +76,23 @@ regression uses a synthetic connected provider and the real episode detail page,
 then returns through both Back levels four times. Run it on iOS 18 as well as a
 current OS; this verifies navigation, not network transfer or offline playback.
 
+## Home row navigation on iOS 18
+
+The Home Films heading reproduced a main-thread SwiftUI update loop on an
+iPhone 11 simulator running iOS 18.0, using a synthetic Jellyfin server shelf,
+enabled hero, cached artwork, and the production `PlozziOSTabShell`. The first
+heading tap left Home visible and the app near 100% CPU; a process sample showed
+repeated Home body and AttributeGraph updates. The same fixture in a standalone
+navigation stack, even with native tabs, completed four push/Back cycles.
+
+Keep the row-browser destination's captures limited to the app model and
+resolved layout inputs, not the entire Home view and its environment. This
+change alone allowed the production-shell fixture to complete all four cycles
+on iOS 18. The regression is
+`ContinueWatchingDetailsInteractionTests.testServerFilmsHeaderWithHeroRemainsNavigableAcrossRepeatedPushes`.
+Retain the production shell when modifying it. This is simulator navigation
+evidence, not a physical iPhone XR result or proof of a whole-device crash.
+
 ## Sentry diagnostics and matching symbols
 
 Crash-reporting consent gates all uploads. Automatic UI/network breadcrumbs and
@@ -1603,6 +1620,16 @@ and a passing functional test are not substitutes for presented-frame timing.
   recreated between queries. The physical failure explicitly requested a rail
   item as page content, then moved again when the rail became disabled. Cross the
   newly enabled page's render commit before resolving its content target.
+- **Keep pinned page content in its own native focus section.** Without that
+  boundary, SwiftUI can omit both native buttons and nested scroll content from
+  its focus-container query while the rail's section owns focus. A visible
+  empty-state action is still useful page content; missing media must not trap
+  focus in navigation. Finish a mounted entry region's native-layout handoff for
+  explicit destination selection as well as startup. This continuation is only
+  for rendered layout; data-loading regions still wait for readiness notifications.
+  `EmptyPinnedNavigationTests` exercises the real Live TV welcome cards and
+  Settings categories, cold starts, Right/Select returns, and inactive retained
+  Live TV while switching back to Home.
 - **New-page entry prefers useful content.** `navigationEntryFocus` declares
   content and fallback regions without changing ordinary directional navigation.
   Libraries prefer their cards; Music prefers Recently Played, then Playlists.

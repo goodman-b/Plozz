@@ -153,16 +153,23 @@ These Home and device-login contracts were checked at upstream revision
 - Access tokens, rotating refresh tokens and profile-verification proofs live in
   the account Keychain entry. The raw PIN is never persisted. Refresh is
   single-flight and compare-and-set against the original login revision.
-  An uncertain refresh requires sign-in rather than replaying a possibly spent
-  token. A refresh proven by transport metrics not to have been transmitted
+  The client conservatively requires sign-in after an uncertain refresh. The
+  checked native server implementation does not consume the previous refresh
+  JWT; this client recovery policy is not a claim that Silo refresh is single-use.
+  A refresh proven by transport metrics not to have been transmitted
   restores the original credential for a later retry after an outage; missing
   evidence is never treated as proof. Library errors retain their real cause,
   so expired authentication offers sign-in rather than an endless offline retry.
-  Silo logins are not cloned through device-to-device credential transfer
-  or iCloud Keychain; another device pairs independently. Device setup still
-  imports the server descriptor and shows it as needing sign-in rather than
-  omitting it from the summary. Settings > iCloud Sync keeps that entry
-  available and opens Silo's native sign-in flow.
+  Silo logins are not cloned through device-to-device transfer or iCloud Keychain.
+  With iCloud Sync enabled, the shared encrypted provider channel can use an
+  existing login to approve an independent permanent device session. This
+  requires protocol 2 with explicit `session_binding` capability. The receiver
+  verifies the challenge binding, server, account, profile and non-temporary
+  purpose, and never copies a profile PIN proof. Protected profiles, older
+  servers and expired/revoked bootstrap credentials retain native manual sign-in
+  in Settings > iCloud Sync. Cancellation revokes only the new unused session.
+  The bound enrollment contract was checked against server revision
+  `0b579aa6192d49d7e8e0921dde5e955ac29ce302`.
 - Catalog requests use native cursor pagination and explicit `seek` windows.
   Lightweight cards inherit missing external identities from Silo's frozen
   provider-anchored content-ID scheme, so the identity index can match owned
@@ -227,6 +234,22 @@ These Home and device-login contracts were checked at upstream revision
   protocol-3 sessions without playback activity can expire independently of
   their signed URL's expiry. Progress samples are sequenced and stop
   requests carry an idempotent stop identifier.
+- External library playback uses the same validated native plan and exact file,
+  including mobile conversion limits. External negotiations request
+  `progress_persistence: client` so expiry/cleanup cannot invent playback history;
+  supported player callbacks feed the ordinary Plozz watch-state reconciler.
+  Original and HLS sessions both retain cleanup ownership. A restored,
+  credential-free receipt can release the session through the original
+  authorized account/profile without resolving another playback grant.
+  There is no background relay or fabricated heartbeat. Media requests sustain
+  the session, but a long pause can expire it; reopening playback requires a new
+  Plozz play intent. API-origin media also requires a current account bearer;
+  external eligibility requires its remaining lifetime and any advertised signed
+  grant expiry to cover the full source duration plus five minutes for startup.
+  Short-lived grants and unknown-duration API-origin media stay internal rather
+  than opening a stream the external player cannot refresh. See the upstream
+  [session-liveness contract](https://github.com/Silo-Server/silo-server/blob/baf9d4267043a2fa5f41f4fdebc4a175e564e793/docs/architecture/playback-protocol-v3.md#25-session-liveness).
+  Downloads and scheduled channels remain internal.
 - Watched state and the native Silo watchlist write back to Silo. Batched resume
   synchronization checks each result, not only HTTP success.
   Watched writes use `POST /api/v2/watched/{id}`; unwatched writes use `DELETE`.

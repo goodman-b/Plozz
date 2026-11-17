@@ -174,6 +174,7 @@ public struct PlaybackSettings: Codable, Equatable, Sendable {
     /// Listen to the playing audio with ShazamKit and show the song in the
     /// player's Info card (#351). Per profile, ON by default.
     public var identifySongs: Bool
+    public var dolbyVisionFELConversion: Bool
 
     /// Optional player tabs, per profile. Availability still depends on content.
     public var chaptersInPlayer: Bool
@@ -189,11 +190,10 @@ public struct PlaybackSettings: Codable, Equatable, Sendable {
     /// if you don't use Match Dynamic Range and prefer the snappiest transitions.
     public var fadeOnDynamicRangeChange: Bool
 
-    /// Fade to black when leaving playback of content whose dynamic range *isn't*
-    /// changing, to absorb the handshake blip the TV produces when tvOS's *Match
-    /// Frame Rate* drops the display back from the movie's rate (23.976/24/25 Hz)
-    /// to the UI's. There's no API that reports whether Match Frame Rate is on,
-    /// so this is ON by default (it's the setup that flashes) and OFF is the
+    /// Fade to black when opening or leaving playback whose dynamic range *isn't*
+    /// changing, to cover tvOS's *Match Frame Rate* switch between the content's
+    /// rate (23.976/24/25 Hz) and the UI's. There's no API that reports whether
+    /// Match Frame Rate is on, so this is ON by default and OFF is the
     /// escape hatch for anyone who has frame-rate matching disabled and would
     /// rather return to Home instantly.
     public var fadeOnFrameRateChange: Bool
@@ -222,6 +222,7 @@ public struct PlaybackSettings: Codable, Equatable, Sendable {
         rememberAudioTrackPerSeries: Bool = true,
         rememberSubtitleTrackPerSeries: Bool = true,
         identifySongs: Bool = true,
+        dolbyVisionFELConversion: Bool = true,
         chaptersInPlayer: Bool = true,
         castInPlayer: Bool = true,
         episodesInPlayer: Bool = true,
@@ -266,6 +267,7 @@ public struct PlaybackSettings: Codable, Equatable, Sendable {
         self.rememberAudioTrackPerSeries = rememberAudioTrackPerSeries
         self.rememberSubtitleTrackPerSeries = rememberSubtitleTrackPerSeries
         self.identifySongs = identifySongs
+        self.dolbyVisionFELConversion = dolbyVisionFELConversion
         self.chaptersInPlayer = chaptersInPlayer
         self.castInPlayer = castInPlayer
         self.episodesInPlayer = episodesInPlayer
@@ -450,6 +452,7 @@ public extension PlaybackSettings {
         case rememberAudioTrackPerSeries
         case rememberSubtitleTrackPerSeries
         case identifySongs
+        case dolbyVisionFELConversion
         case chaptersInPlayer
         case castInPlayer
         case episodesInPlayer
@@ -590,6 +593,9 @@ public extension PlaybackSettings {
         self.identifySongs =
             (try? container.decodeIfPresent(Bool.self, forKey: .identifySongs))
             .flatMap { $0 } ?? defaults.identifySongs
+        self.dolbyVisionFELConversion =
+            (try? container.decodeIfPresent(Bool.self, forKey: .dolbyVisionFELConversion))
+            .flatMap { $0 } ?? defaults.dolbyVisionFELConversion
         self.chaptersInPlayer =
             (try? container.decodeIfPresent(Bool.self, forKey: .chaptersInPlayer))
             .flatMap { $0 } ?? defaults.chaptersInPlayer
@@ -661,6 +667,7 @@ public extension PlaybackSettings {
         try container.encode(rememberAudioTrackPerSeries, forKey: .rememberAudioTrackPerSeries)
         try container.encode(rememberSubtitleTrackPerSeries, forKey: .rememberSubtitleTrackPerSeries)
         try container.encode(identifySongs, forKey: .identifySongs)
+        try container.encode(dolbyVisionFELConversion, forKey: .dolbyVisionFELConversion)
         try container.encode(chaptersInPlayer, forKey: .chaptersInPlayer)
         try container.encode(castInPlayer, forKey: .castInPlayer)
         try container.encode(episodesInPlayer, forKey: .episodesInPlayer)

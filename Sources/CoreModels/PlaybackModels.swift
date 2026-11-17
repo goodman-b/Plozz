@@ -350,6 +350,8 @@ public struct PlaybackServerDecision: Codable, Hashable, Sendable {
 /// direct-play or transcode and hands back either a legacy resolved URL or a
 /// credential-free typed source.
 public struct PlaybackRequest: Hashable, Sendable {
+    /// Host-selected policy for this playback, not provider metadata. Preview/live callers stay conservative.
+    public var dolbyVisionFELConversion: Bool = false
     public var discPlayback: DiscPlaybackBehavior = .playVideo
     public var discRegionOverride: UInt32? = nil
     public var discPlaylistOverride: Int? = nil
@@ -386,6 +388,11 @@ public struct PlaybackRequest: Hashable, Sendable {
     public var playSessionID: String?
     public var audioTracks: [MediaTrack]
     public var subtitleTracks: [MediaTrack]
+    /// Ephemeral, independently readable SRT URLs for an external-player handoff.
+    /// May contain server-issued grants; never persist or log them.
+    public var externalSubtitleURLs: [URL] = []
+    /// Exact SRT resources for an explicitly admitted app-owned streaming session.
+    public var externalSubtitleLocators: [NetworkFileLocator] = []
     /// Optional server-authored chapters. Empty sources expose no chapter controls.
     public var chapters: [MediaChapter] = []
     /// Provider stream index already encoded into this rendition's video pixels.

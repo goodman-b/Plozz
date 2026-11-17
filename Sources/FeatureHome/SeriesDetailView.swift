@@ -52,6 +52,10 @@ struct SeriesDetailView: View {
     /// Which season's episodes the rail is currently showing. Driven by season
     /// tab focus; seeded to the "next up" season on first appearance.
     @State private var selectedSeasonID: String?
+    /// Set only when the viewer (or the opening route) deliberately chose a
+    /// season. Focus entering the browser is not a season choice, so a return
+    /// refresh may still re-resolve the server's current resume season.
+    @State private var hasExplicitSeasonSelection: Bool
     /// The browser's resting selection resolves Play, not the header's subject.
     @State private var heroItem: MediaItem
     @State private var hasEditedSeasonWatchState = false
@@ -207,6 +211,9 @@ struct SeriesDetailView: View {
         let seasonID = initialEpisode?.seasonID ?? initialSeasonID
         let initialSeason = seasonID.flatMap { id in seasons.first { $0.id == id } }
         _selectedSeasonID = State(initialValue: initialSeason?.id)
+        _hasExplicitSeasonSelection = State(
+            initialValue: initialSeasonID != nil || initialEpisode != nil
+        )
         _heroItem = State(initialValue:
             SeriesEpisodeEntry.openingSeed(
                 for: series, initialEpisode: initialEpisode,
@@ -397,7 +404,8 @@ struct SeriesDetailView: View {
                             let item = DetailPlaybackSelection.playItem(
                                 for: target, sources: target.sources, activeAccountID: target.sourceAccountID,
                                 versionID: effectivePlayVersionID,
-                                explicit: versionOverride != nil || target.explicitSourceSelection
+                                explicit: versionOverride != nil || target.explicitSourceSelection,
+                                explicitVersion: versionOverride != nil || target.explicitVersionSelection
                             )
                             playbackPreparation.handoff(item)
                             onPlay(item)
@@ -409,7 +417,8 @@ struct SeriesDetailView: View {
                             }
                             let selected = DetailPlaybackSelection.playItem(
                                 for: target, sources: target.sources, activeAccountID: target.sourceAccountID,
-                                versionID: effectivePlayVersionID, explicit: true
+                                versionID: effectivePlayVersionID, explicit: true,
+                                explicitVersion: versionOverride != nil || target.explicitVersionSelection
                             )
                             onPlay(selected.requestingDiscPlayback(behavior))
                         },
@@ -420,7 +429,8 @@ struct SeriesDetailView: View {
                             }
                             let selected = DetailPlaybackSelection.playItem(
                                 for: target, sources: target.sources, activeAccountID: target.sourceAccountID,
-                                versionID: effectivePlayVersionID, explicit: true
+                                versionID: effectivePlayVersionID, explicit: true,
+                                explicitVersion: versionOverride != nil || target.explicitVersionSelection
                             )
                             onPlay(selected.requestingExternalPlayer(player))
                         },
@@ -784,7 +794,7 @@ struct SeriesDetailView: View {
             seasons: seasons,
             episodes: stampedLooseEpisodes,
             selectedSeasonID: selectedSeasonID,
-            preserveSelection: hasUserDirectedFocus,
+            preserveSelection: hasExplicitSeasonSelection,
             initialSeasonID: initialSeasonID,
             initialEpisode: initialEpisode,
             resumeEpisode: viewModel.serverResumeEpisode
@@ -925,7 +935,7 @@ struct SeriesDetailView: View {
                 guard let id = newValue,
                       let season = seasons.first(where: { $0.id == id }) else { return }
                 enterSeasonBrowser(onFocusEntered: onFocusEntered)
-                select(season)
+                select(season, explicit: id != activeSeasonID)
                 // Deliberately *don't* move the hero to the season: focusing the tab bar
                 // keeps the page on the episode you were last viewing, so going up and
                 // back down stays anchored to that episode rather than the season.
@@ -1081,7 +1091,8 @@ struct SeriesDetailView: View {
 
     /// Selects `season`: marks it active and kicks off (cached) episode loading
     /// so the rail and Play target are ready as focus settles on the tab.
-    private func select(_ season: MediaItem) {
+    private func select(_ season: MediaItem, explicit: Bool = true) {
+        if explicit { hasExplicitSeasonSelection = true }
         selectedSeasonID = season.id
         Task {
             await viewModel.loadEpisodes(for: season.id)
@@ -1542,7 +1553,8 @@ struct SeriesDetailView: View {
         return DetailPlaybackSelection.playItem(
             for: target, sources: target.sources, activeAccountID: target.sourceAccountID,
             versionID: effectivePlayVersionID,
-            explicit: versionOverride != nil || target.explicitSourceSelection
+            explicit: versionOverride != nil || target.explicitSourceSelection,
+            explicitVersion: versionOverride != nil || target.explicitVersionSelection
         )
     }
 
@@ -1567,7 +1579,7 @@ struct SeriesDetailView: View {
             await frontSwitchTarget(target)
             return
         }
-        if !hasUserDirectedFocus, initialEpisode == nil,
+        if !hasExplicitSeasonSelection, initialEpisode == nil,
            let seed = SeriesEpisodeEntry.openingSeed(
                for: series, initialEpisode: initialEpisode,
                initialSeasonID: initialSeasonID, resumeEpisode: viewModel.serverResumeEpisode

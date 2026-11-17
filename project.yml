@@ -387,6 +387,7 @@ targets:
         UIRequiresFullScreen: false
         BGTaskSchedulerPermittedIdentifiers:
           - "$(PRODUCT_BUNDLE_IDENTIFIER).downloads.*"
+          - "$(PRODUCT_BUNDLE_IDENTIFIER).external-stream.*"
         # remote-notification lets CloudKit (CKSyncEngine) wake the app to pull
         # config changes pushed from another device on the same Apple ID.
         UIBackgroundModes:
@@ -503,6 +504,9 @@ targets:
         basedOnDependencyAnalysis: false
     sources:
       - path: Tests/FocusHost
+      - path: Tests/HomePresentationSupport/UpcomingCaptureFixture.swift
+      - path: Tests/HomePresentationSupport/DetailSelectionFixture.swift
+      - path: Tests/HomePresentationSupport/ContentRefreshReturnFixture.swift
       - path: Tests/iOSPresentationHost/DetailInformationFixture.swift
       - path: Tests/DiscoverPresentationSupport/DiscoverBrowseFixture.swift
       - path: Tests/PlaybackPresentationSupport/PlaybackFailureFixture.swift
@@ -513,6 +517,8 @@ targets:
       - path: Tests/AuthPresentationSupport/ServerAddressNavigationFixture.swift
       - path: Tests/AuthPresentationSupport/PlexHomeOnboardingFixture.swift
       - path: Tests/FeatureLiveTVRemoteTests/NavigationRailFixture.swift
+      - path: Tests/FeatureLiveTVRemoteTests/MultiviewFixture.swift
+      - path: Tests/FeatureLiveTVRemoteTests/SourceOnboardingFixture.swift
       - path: App/Resources/Assets.xcassets
       - path: App/Resources/CommunityAssets.xcassets
       - path: App/Resources/Localizable.xcstrings
@@ -539,6 +545,9 @@ targets:
         basedOnDependencyAnalysis: false
     sources:
       - path: Tests/iOSPresentationHost
+      - path: Tests/HomePresentationSupport/UpcomingCaptureFixture.swift
+      - path: Tests/HomePresentationSupport/DetailSelectionFixture.swift
+      - path: Tests/HomePresentationSupport/ContentRefreshReturnFixture.swift
       - path: Tests/DiscoverPresentationSupport/DiscoverBrowseFixture.swift
       - path: Tests/AuthPresentationSupport/MobileServerOnboardingFixture.swift
       - path: Tests/AuthPresentationSupport/OnboardingPreviewHTTP.swift
@@ -567,6 +576,7 @@ targets:
         NSMotionUsageDescription: "Plozz uses device motion to follow your phone's landscape direction during playback."
         BGTaskSchedulerPermittedIdentifiers:
           - "$(PRODUCT_BUNDLE_IDENTIFIER).downloads.*"
+          - "$(PRODUCT_BUNDLE_IDENTIFIER).external-stream.*"
         UIBackgroundModes:
           - audio
           - processing
@@ -600,13 +610,25 @@ targets:
     platform: iOS
     sources:
       - path: Tests/iOSPresentationTests
+      - path: Tests/AppShellTests/WatchlistCloudApplyTests.swift
+      - path: Tests/FocusIntegrationTests/ContentRefreshSurfaceHostedTests.swift
       - path: Tests/PlaybackPresentationSupport/PlayerSongLayoutPreviewTests.swift
       - path: Tests/PlaybackPresentationSupport/PlayerContinueWatchingPresentationTests.swift
       - path: Tests/CoreModelsTests/ContinueWatchingInPlayerSettingsTests.swift
       - path: Tests/FeaturePlaybackTests/ContinueWatchingSelectionTests.swift
       - path: Tests/CoreUITests/DetailInformationPreviewTests.swift
+      - path: Tests/CoreUITests/AmbientGradientTests.swift
+      - path: Tests/CoreUITests/DetailHeaderMetadataRowTests.swift
       - path: Tests/EnginePlozzigenTests/SpatialAudioLayoutPreferenceTests.swift
       - path: Tests/FeaturePlaybackTests/NativePlaybackLifecycleTests.swift
+      - path: Tests/FeaturePlaybackTests/PlayerVideoZoomTests.swift
+      - path: Tests/FeaturePlaybackTests/PlayerViewModelEOFTests.swift
+      - path: Tests/FeaturePlaybackTests/VideoNowPlayingCoordinatorTests.swift
+      - path: Tests/FeaturePlaybackTests/SystemPlaybackAudioTests.swift
+      - path: Tests/FeaturePlaybackTests/SeriesTrackMemoryTests.swift
+      - path: Tests/FeaturePlaybackTests/StreamingPlaybackTests.swift
+      - path: Tests/FeaturePlaybackTests/SubtitleTrackControllerTests.swift
+      - path: Tests/CoreModelsTests/SeriesTrackPreferenceStoreTests.swift
       - path: Tests/FeatureLiveTVCoreTests/LiveTVPlaybackCoordinatorTests.swift
       - path: Tests/FeatureLiveTVTests/LiveTVGuideRowLayoutTests.swift
       - path: Tests/CoreModelsTests/SettingsHydrationTests.swift
@@ -621,6 +643,7 @@ targets:
       - path: Tests/FocusIntegrationTests/DiagnosticRecordingStatusHostedTests.swift
       - path: Tests/FocusIntegrationTests/PINRequirementPresentationTests.swift
       - path: Tests/HomePresentationSupport
+        excludes: ["ContentRefreshReturnFixture.swift", "ContentRefreshReturnInteractionTests.swift", "DetailSelectionFixture.swift", "DetailSelectionInteractionTests.swift"]
       - path: Tests/TestSupportPerformance
       - path: Tests/PerformancePresentationSupport
       - path: Tests/ProviderIPTVTests/IPTVTestHTTPServer.swift
@@ -652,6 +675,8 @@ targets:
     platform: iOS
     sources:
       - path: Tests/iOSInteractionTests
+      - path: Tests/HomePresentationSupport/DetailSelectionInteractionTests.swift
+      - path: Tests/HomePresentationSupport/ContentRefreshReturnInteractionTests.swift
       - path: Tests/PlaybackPresentationSupport/PlaybackFailureInteractionTests.swift
       - path: Tests/PlaybackPresentationSupport/DiscReviewScreenshotTests.swift
       - path: Tests/LiveTVPresentationSupport/IPTVOrganizationInteractionTests.swift
@@ -672,6 +697,9 @@ targets:
     platform: tvOS
     sources:
       - path: Tests/HomeRemoteTests
+      - path: Tests/HomePresentationSupport/DetailSelectionInteractionTests.swift
+      - path: Tests/HomePresentationSupport/ContentRefreshReturnInteractionTests.swift
+      - path: Tests/FeatureLiveTVRemoteTests/LiveTVMultiviewRemoteTests.swift
       - path: Tests/PlaybackPresentationSupport/PlaybackFailureInteractionTests.swift
       - path: Tests/PlaybackPresentationSupport/DiscReviewScreenshotTests.swift
       - path: Tests/LiveTVPresentationSupport/IPTVOrganizationInteractionTests.swift
@@ -686,6 +714,7 @@ targets:
     type: bundle.unit-test
     platform: tvOS
     sources:
+      - path: Tests/PlaybackPresentationSupport/FLACMusicPlaybackHostedTests.swift
       - path: Tests/FocusIntegrationTests
       - path: Tests/PlaybackPresentationSupport/PlayerSongLayoutPreviewTests.swift
       - path: Tests/PlaybackPresentationSupport/PlayerContinueWatchingPresentationTests.swift
@@ -694,6 +723,7 @@ targets:
       - path: Tests/CoreUITests/DetailInformationPreviewTests.swift
       - path: Tests/EnginePlozzigenTests/SpatialAudioLayoutPreferenceTests.swift
       - path: Tests/HomePresentationSupport
+        excludes: ["ContentRefreshReturnFixture.swift", "ContentRefreshReturnInteractionTests.swift", "DetailSelectionFixture.swift", "DetailSelectionInteractionTests.swift"]
       - path: Tests/TestSupportPerformance
       - path: Tests/PerformancePresentationSupport
       - path: Tests/ProviderIPTVTests/IPTVTestHTTPServer.swift

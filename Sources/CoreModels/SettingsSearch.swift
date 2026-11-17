@@ -157,7 +157,7 @@ public enum SettingsSearchPage: String, CaseIterable, Sendable {
     public var platform: SettingsSearchEntry.Platform? {
         switch self {
         case .downloads, .streamingAdvanced, .detailRatingSources: .mobile
-        case .topShelf, .musicPlayer: .television
+        case .topShelf: .television
         default: nil
         }
     }
@@ -221,10 +221,12 @@ public struct SettingsSearchEntry: Identifiable, Hashable, Sendable {
 
     public func isAvailable(
         on platform: Platform, osVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-        isKids: Bool = false, featureFlags: RuntimeFeatureFlags = .buildDefault
+        isKids: Bool = false, featureFlags: RuntimeFeatureFlags = .buildDefault,
+        releaseChannel: AppReleaseChannel = .current
     ) -> Bool {
         osVersion >= minimumOSVersion && !(isKids && requiresAdultProfile)
             && (id != "offline-mode" || featureFlags.isEnabled(.offlineMode))
+            && (page != .musicPlayer || platform == .television || releaseChannel.isBeta)
             && (self.platform == nil || self.platform == platform
                 || (self.platform == .mobile && platform != .television))
     }
@@ -237,7 +239,11 @@ public struct SettingsSearchEntry: Identifiable, Hashable, Sendable {
     }
 
     public func destinationPath(on platform: Platform) -> [SettingsSearchLabel] {
-        destinationPage(on: platform).path + (subtitlePage == .appearance ? [] : [.localized(subtitlePage.title)])
+        if platform != .television {
+            if page == .theme { return [.localized("Appearance")] }
+            if page == .musicPlayer { return [.localized("Appearance"), .localized("Music player")] }
+        }
+        return destinationPage(on: platform).path + (subtitlePage == .appearance ? [] : [.localized(subtitlePage.title)])
             + (skipKind.map { [.localized($0.settingsTitle)] } ?? [])
             + (qualityNetwork.map { [.localized($0.title)] } ?? [])
     }
@@ -520,6 +526,8 @@ public enum SettingsSearchCatalog {
               keywords: "start live channel guide categories default screen"),
         .init("channel-order", page: .liveTV, title: "Channel order",
               keywords: "sort channels alphabetically name number order"),
+        .init("live-clean-channel-names", page: .liveTV, title: "Clean channel names",
+              keywords: "iptv names cleanup decorations spacing region quality labels"),
         .init("guide-preferences", page: .liveTV, title: "Guide preferences",
               keywords: "channel preview keep watching browsing recently watched guide"),
         .init("channel-visibility", page: .liveTV, title: "Channel visibility",
@@ -683,8 +691,11 @@ public enum SettingsSearchCatalog {
     public static func entries(
         on platform: SettingsSearchEntry.Platform,
         osVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion, isKids: Bool = false,
-        featureFlags: RuntimeFeatureFlags = .buildDefault
+        featureFlags: RuntimeFeatureFlags = .buildDefault, releaseChannel: AppReleaseChannel = .current
     ) -> [SettingsSearchEntry] {
-        entries.filter { $0.isAvailable(on: platform, osVersion: osVersion, isKids: isKids, featureFlags: featureFlags) }
+        entries.filter {
+            $0.isAvailable(on: platform, osVersion: osVersion, isKids: isKids,
+                           featureFlags: featureFlags, releaseChannel: releaseChannel)
+        }
     }
 }

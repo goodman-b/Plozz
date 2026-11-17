@@ -151,6 +151,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
     }
 
     public var supportsActivePictureAnalysis: Bool { true }
+    public var activePictureSourceID: UUID? { outputLoadGeneration }
     #if DEBUG
     private var lastPictureTimeForTesting: Double?
     private(set) var pictureSampleCountForTesting = 0
@@ -393,6 +394,14 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
             : [.playbackSpeed, .dualSubtitleDecode, .videoZoom]
     }
 
+    private var allowsFELConversionOverride = false
+
+    public var canChangeDolbyVisionFELConversion: Bool {
+        allowsFELConversionOverride && AppReleaseChannel.current.isBeta
+            && AEEngine.OptionalComponent.dolbyVisionFelCurves.isBuiltIn
+            && engine.sourceDolbyVisionEnhancementLayerType == "FEL" && engine.videoRoute != .remoteBypass
+    }
+
     deinit {
         progressTimer?.cancel()
         liveSourceResetCancellable?.cancel()
@@ -572,6 +581,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
 
     public func load(request: PlaybackRequest, startPosition: TimeInterval) async {
         guard let outputGeneration = await beginOutputLoad() else { return }
+        allowsFELConversionOverride = Self.supportsFELConversion(for: request)
         #if canImport(DiscNavigation) && canImport(UIKit)
         let outgoingDisc = discSession
         outgoingDisc?.stop()
@@ -904,6 +914,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
 
     public func loadLive(url: URL, httpHeaders: [String: String]) async {
         guard let outputGeneration = await beginOutputLoad() else { return }
+        allowsFELConversionOverride = false
         serverRenditionAudio = nil
         chapters = []
         streamingFailure = nil
@@ -1088,6 +1099,11 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
         #endif
     }
 
+    nonisolated static func supportsFELConversion(for request: PlaybackRequest) -> Bool {
+        !request.suppressOrdinaryWatchReporting && request.externalAudioURL == nil
+            && request.discPlayback != .openMenu
+    }
+
     func onDemandLoadOptions(
         for request: PlaybackRequest, outputPolicy: LiveChannelOutputPolicy = .init()
     ) -> LoadOptions {
@@ -1102,6 +1118,8 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
         }
         let options = Self.onDemandLoadOptions(
             losslessAudioEnabled: losslessAudioPreference(),
+            dolbyVisionFELConversion: request.dolbyVisionFELConversion
+                && Self.supportsFELConversion(for: request),
             outputPolicy: outputPolicy,
             readAhead: isLocalFile || request.suppressOrdinaryWatchReporting
                 ? .default : readAheadPreference()
@@ -1111,6 +1129,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
 
     nonisolated static func onDemandLoadOptions(
         losslessAudioEnabled: Bool = LosslessAudioSettingsStore.defaultEnabled,
+        dolbyVisionFELConversion: Bool = false,
         outputPolicy: LiveChannelOutputPolicy = .init(),
         readAhead: PlaybackReadAhead = .default
     ) -> LoadOptions {
@@ -1132,7 +1151,10 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
         }
         #endif
         options.preferDualLayerDolbyVision = false
-        options.dolbyVisionHandling = .profile7BaseLayer
+        let convertsFEL = dolbyVisionFELConversion && AppReleaseChannel.current.isBeta
+            && AEEngine.OptionalComponent.dolbyVisionFelCurves.isBuiltIn
+        options.foldsDolbyVisionFEL = convertsFEL
+        options.dolbyVisionHandling = convertsFEL ? .profile7KnownLayers : .profile7MELOnly
         // Aether uses approximately four-second segments and clamps the maximum
         // to 2,700, retaining its free-space budget and producer backpressure.
         switch readAhead {
@@ -1185,7 +1207,8 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
             nativeRemoteHLS: format == .hls,
             nativeRemoteHLSIngestFallback: true
         )
-        options.dolbyVisionHandling = .profile7BaseLayer
+        options.foldsDolbyVisionFEL = false
+        options.dolbyVisionHandling = .profile7MELOnly
         return options
     }
 
@@ -1503,6 +1526,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
     }
 
     private func stopEngine(resetDisplayCriteria: Bool) {
+        allowsFELConversionOverride = false
         #if canImport(DiscNavigation) && canImport(UIKit)
         discSession?.stop()
         discMenuPresentation.isActive = false
@@ -1786,7 +1810,7 @@ public final class PlozzigenVideoEngine: VideoEngine, LiveChannelEngine {
     }
 
     public var nowPlayingPlayer: AVPlayer? { engine.currentAVPlayer }
-    #if os(iOS)
+    #if os(iOS) || os(tvOS)
     public func previewVideoFrame() -> CVPixelBuffer? { engine.latestSoftwareVideoFrame() }
     public var previewFrameGeneration: UInt64? { engine.softwareVideoFrameGeneration }
     #endif

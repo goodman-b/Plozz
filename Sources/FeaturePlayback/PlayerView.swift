@@ -135,30 +135,45 @@ public struct PlayerView: View {
         }
         .onChange(of: viewModel.dynamicRangeTransitionToken) { _, _ in
             if viewModel.effectiveDynamicRange.isAwaitingEngineProbe {
-                hdrTransition.restartProbeTransition()
+                hdrTransition.restartProbeTransition(hint: viewModel.effectiveDynamicRange.bestAvailable)
+            } else {
+                hdrTransition.beginFrameRateTransition()
             }
         }
         .modifier(DisplaySettleObserver { hdrTransition.displayDidSettle() })
-        .onChange(of: scenePhase) { _, phase in
-            // System overlays make tvOS inactive without backgrounding playback.
-            // Home/sleep still needs an explicit pause and checkpoint because
-            // that transition does not necessarily fire onDisappear.
-            switch phase {
-            case .active:
-                Task { await viewModel.resumeAfterBackground() }
-            case .inactive:
-                viewModel.didBecomeInactive()
-            case .background:
-                viewModel.didEnterBackground()
-            @unknown default:
-                viewModel.suspendForBackground()
+        #if os(iOS)
+        .background {
+            let model = viewModel
+            PlayerSceneLifecycleReader { phase in
+                Self.handleScenePhase(phase, viewModel: model)
             }
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
         }
+        #else
+        .onChange(of: scenePhase) { _, phase in
+            Self.handleScenePhase(phase, viewModel: viewModel)
+        }
+        #endif
         .onDisappear {
             discStatus.dismiss()
             diagnosticsSampler.stop()
             releaseGlassSuspension()
             Task { await viewModel.stop() }
+        }
+    }
+
+    private static func handleScenePhase(_ phase: ScenePhase, viewModel: PlayerViewModel) {
+        HandoffDiagnostics.emit("session SCENE phase=\(phase)")
+        switch phase {
+        case .active:
+            Task { await viewModel.resumeAfterBackground() }
+        case .inactive:
+            viewModel.didBecomeInactive()
+        case .background:
+            viewModel.didEnterBackground()
+        @unknown default:
+            viewModel.suspendForBackground()
         }
     }
 
@@ -171,6 +186,7 @@ public struct PlayerView: View {
         playerStack
         .onAppear {
             hdrTransition.isDynamicRangeFadeEnabled = viewModel.fadesOnDynamicRangeChange
+            hdrTransition.isFrameRateFadeEnabled = viewModel.fadesOnFrameRateChange
             hdrTransition.synchronize(
                 with: viewModel.effectiveDynamicRange,
                 inheritedPreservedRange: viewModel.inheritedPreservedDynamicRange
@@ -394,6 +410,7 @@ public struct PlayerView: View {
                 selectSubtitle: { viewModel.selectSubtitleOption(id: $0) },
                 selectSecondarySubtitle: { viewModel.selectSecondarySubtitleOption(id: $0) },
                 setPlaybackSpeed: { viewModel.setPlaybackSpeed($0) },
+                setDolbyVisionFELConversion: { viewModel.setDolbyVisionFELConversion($0) },
                 setAudioDelay: { viewModel.setAudioDelay($0) },
                 setSubtitleDelay: { viewModel.setSubtitleDelay($0) },
                 setDialogEnhance: { viewModel.setDialogEnhanceEnabled($0) },

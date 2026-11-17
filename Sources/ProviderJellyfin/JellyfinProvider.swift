@@ -173,7 +173,9 @@ public struct JellyfinProvider: LibraryItemBatchProviding, ServerRatingsProvidin
                 localizedTitle: localizedTitle,
                 items: Array(items.prefix(limit)),
                 isHomeDefault: forHome ? false : nil,
-                browseID: "\(recommendation.RecommendationType):\(recommendation.CategoryId ?? subject ?? "")"
+                // Emby reshuffles this endpoint without a continuation cursor.
+                browseID: kind == .emby ? nil
+                    : "\(recommendation.RecommendationType):\(recommendation.CategoryId ?? subject ?? "")"
             )
         }
     }
@@ -234,13 +236,20 @@ public struct JellyfinProvider: LibraryItemBatchProviding, ServerRatingsProvidin
     /// ordered by effective recency. `Int.max` drains both feeds through bounded
     /// HTTP pages and deliberately applies no final cap.
     public func continueWatching(limit: Int) async throws -> [MediaItem] {
+        try await continueWatching(limit: limit, includeSeriesRecency: true)
+    }
+
+    public func continueWatching(limit: Int, includeSeriesRecency: Bool) async throws -> [MediaItem] {
         let outcome = try await continueWatchingDTOs(limit: limit, parentID: nil)
         guard outcome.successfulEndpointCount > 0,
               !outcome.items.isEmpty || outcome.firstError == nil else {
             throw outcome.firstError ?? AppError.invalidResponse
         }
         let merged = outcome.items
-        let seriesDates = try await seriesLastPlayedDatesBestEffort(for: merged)
+        var seriesDates: [String: Date] = [:]
+        if includeSeriesRecency {
+            seriesDates = try await seriesLastPlayedDatesBestEffort(for: merged)
+        }
         // Stamp NextUp recency BEFORE capping: a just-finished show's next episode
         // must be able to survive the `limit` cut on its stamped recency rather than
         // being dropped merely because in-progress Resume items filled the limit
@@ -1557,6 +1566,9 @@ public struct JellyfinProvider: LibraryItemBatchProviding, ServerRatingsProvidin
         let confirmsAtmos = cachedProbe.completed
             && cachedProbe.facts?.audioIsAtmos == true
         var mappedItem = map(item: detail)
+        // A title's runtime may describe another cut, so it cannot validate this file.
+        mappedItem.runtime = JellyfinTicks.seconds(fromTicks: originalSource.RunTimeTicks)
+            .flatMap { $0 > 0 ? $0 : nil }
 
         let streams = source.MediaStreams ?? fallbackStreams
         var audio = streams.filter { $0.`Type` == "Audio" }.map(map(stream:))
@@ -3009,10 +3021,42 @@ extension JellyfinProvider: SupplementalStreamFactsProviding {
 // MARK: - Watched state
 
 extension JellyfinProvider: WatchStateProviding {
-    /// Toggles an item's played/watched state on the server. For a season or
-    /// series id Jellyfin cascades the change to the contained episodes.
     public func setPlayed(_ played: Bool, itemID: String) async throws {
         try await client.setItemPlayed(played, userID: session.userID, itemID: itemID)
+    }
+
+    public func setPlayed(_ played: Bool, itemID: String, kind: MediaItemKind?, capturedAt: Date) async throws {
+        guard let kind, kind == .season || kind == .series else {
+            try await setPlayed(played, itemID: itemID)
+            return
+        }
+        let before = try await client.watchStateEpisodes(userID: session.userID, parentID: itemID, kind: kind)
+        try Task.checkCancellation()
+        try await WatchMutationDeliveryAuthorization.check()
+        try await setPlayed(played, itemID: itemID)
+
+        // A container/list summary can reflect the parent's new flag while the
+        // individual episode is unchanged. Confirm each leaf independently.
+        for episode in before {
+            let state = try await client.episodeWatchState(
+                userID: session.userID, itemID: episode.Id, parentID: itemID, kind: kind
+            )
+            if state.Played == played, (state.PlaybackPositionTicks ?? 0) <= 0 { continue }
+            try Task.checkCancellation()
+            try await WatchMutationDeliveryAuthorization.check()
+            if state.Played != played {
+                try await setPlayed(played, itemID: episode.Id)
+            }
+            try Task.checkCancellation()
+            try await WatchMutationDeliveryAuthorization.check()
+            try await setResumePosition(0, itemID: episode.Id, capturedAt: capturedAt)
+            let verified = try await client.episodeWatchState(
+                userID: session.userID, itemID: episode.Id, parentID: itemID, kind: kind
+            )
+            guard verified.Played == played, (verified.PlaybackPositionTicks ?? 0) <= 0 else {
+                throw AppError.invalidResponse
+            }
+        }
     }
 }
 

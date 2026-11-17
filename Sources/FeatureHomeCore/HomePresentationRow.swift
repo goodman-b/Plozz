@@ -12,6 +12,11 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
     public let source: Source
     public var id: HomeRowID { choice.id }
 
+    public init(choice: HomeRowChoice, source: Source) {
+        self.choice = choice
+        self.source = source
+    }
+
     public var canBrowse: Bool {
         supportsBrowsing()
     }
@@ -39,9 +44,11 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
 
     public static func displayState(
         _ state: LoadState<HomeViewModel.Content>,
-        liveTV: HomeLiveTVSnapshot, visibility: HomeLibraryVisibility
+        liveTV: HomeLiveTVSnapshot, visibility: HomeLibraryVisibility,
+        upcoming: [UpcomingRelease] = []
     ) -> LoadState<HomeViewModel.Content> {
-        if case .empty = state, hasLiveTVRows(liveTV, visibility: visibility) {
+        if case .empty = state,
+           !resolve(rows: [], content: .init(), visibility: visibility, liveTV: liveTV, upcoming: upcoming).isEmpty {
             return .loaded(.init())
         }
         return state
@@ -50,8 +57,11 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
     public static func resolve(
         rows: [HomeRow], content: HomeViewModel.Content, visibility: HomeLibraryVisibility,
         liveTV: HomeLiveTVSnapshot = .empty,
+        upcoming: [UpcomingRelease] = [],
         presentation: LibraryPresentationSettings = .default,
-        showsEmptySectionMessages: Bool = true
+        showsEmptySectionMessages: Bool = true,
+        serverInfo: [String: SourceServerInfo] = [:],
+        identitySources: (MediaItem) -> [MediaSourceRef] = { _ in [] }
     ) -> [Self] {
         let shared = HomeRowChoice.shared
         func entry(_ row: HomeRow) -> Self? {
@@ -80,6 +90,18 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
             return Self(choice: choice, source: .home(row))
         }
         var available = rows.filter { $0.kind != .libraries }.compactMap(entry)
+        if !upcoming.isEmpty, let choice = shared.first(where: { $0.id == .global(.comingSoon) }) {
+            available.insert(Self(
+                choice: choice,
+                source: .library(.init(
+                    section: LibrarySection(
+                        id: "comingSoon", title: "Coming Soon", localizedTitle: "Coming Soon",
+                        style: .landscape, items: upcoming.map(\.item), hasMore: true
+                    ),
+                    isLoading: false, failure: nil
+                ))
+            ), at: min(1, available.count))
+        }
         if !liveTV.channels.isEmpty, let choice = shared.first(where: { $0.id == .liveTV }) {
             available.append(Self(choice: choice, source: .liveTV(liveTV.channels)))
         }
@@ -151,10 +173,20 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
         }
         for var row in content.collectionRows {
             guard let definition = visibility.collectionSections.first(where: {
-                $0.id == row.definition.id && $0.source == row.definition.source
-            }), definition.source.libraryKey.map(visibility.isEnabled) != false else { continue }
+                $0.id == row.definition.id && $0.sources == row.definition.sources && $0.query == row.definition.query
+            }), definition.sources.contains(where: { $0.libraryKey.map(visibility.isEnabled) != false }) else { continue }
             row.definition = definition
-            row.items = row.items.filter { $0.isVisibleOnHome(isLibraryVisible: visibility.isEnabled) }
+            row = row.resolving(home: [
+                .continueWatching: content.continueWatching,
+                .watchlist: content.watchlist,
+                .recentlyAdded: HomeRecentlyAddedPolicy.items(
+                    content.recentlyAddedCandidates ?? content.latest,
+                    hideWatched: visibility.hideWatchedRecentlyAdded, limit: .max
+                )
+            ], visibility: visibility, serverInfo: serverInfo, identitySources: identitySources)
+            if !definition.sources.contains(where: \.isAccountWideHistory) {
+                row.items = row.items.filter { $0.isVisibleOnHome(isLibraryVisible: visibility.isEnabled) }
+            }
             available.append(Self(
                 choice: HomeRowChoice(collectionSection: definition), source: .library(row.row)
             ))
@@ -166,8 +198,8 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
                !visibility.isEnabled("\(source.accountID):\(library)") { continue }
             if let section = issue.choice.collectionSection {
                 guard visibility.collectionSections.contains(where: {
-                    $0.id == section.id && $0.source == section.source
-                }), section.source.libraryKey.map(visibility.isEnabled) != false else { continue }
+                    $0.id == section.id && $0.sources == section.sources
+                }), section.sources.contains(where: { $0.libraryKey.map(visibility.isEnabled) != false }) else { continue }
             }
             // Keep usable cached/partial content visible; its diagnostic remains in the editor.
             var browseItem: MediaItem?
@@ -205,14 +237,36 @@ public struct HomePresentationRow: Identifiable, Equatable, Sendable {
         let byID = Dictionary(available.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let ordered = visibility.rowSections(choices: available.map(\.choice)).enabled
         return ordered.compactMap { byID[$0] }.map { entry in
-            guard case let .library(row) = entry.source else { return entry }
-            return Self(choice: entry.choice, source: .library(.init(
-                section: row.section.resolvingCollectionCovers(presentation.collectionCoverLayout(
+            let name = visibility.homeRowName(for: entry.id)
+            let choice = name.map { entry.choice.renamed(to: $0) } ?? entry.choice
+            switch entry.source {
+            case var .home(row):
+                row.customTitle = name
+                return Self(choice: choice, source: .home(row))
+            case .liveTV:
+                return Self(choice: choice, source: entry.source)
+            case let .library(row):
+                var section = row.section.resolvingCollectionCovers(presentation.collectionCoverLayout(
                     at: LibraryPresentationSettings.collectionCoverAddress(for: entry.id)
-                )),
-                isLoading: row.isLoading, failure: row.failure, browseItem: row.browseItem,
-                issue: row.issue, collectionCardStyle: row.collectionCardStyle
-            )))
+                ))
+                if let name {
+                    section = LibrarySection(
+                        id: section.id, title: name, style: section.style, items: section.items,
+                        isHomeDefault: section.isHomeDefault, isLegacyHomeDefault: section.isLegacyHomeDefault,
+                        browseID: section.browseID, hasMore: section.hasMore
+                    )
+                }
+                let issue = row.issue.map {
+                    HomeSectionIssue(
+                        choice: choice, reason: $0.reason, serverName: $0.serverName, providerKind: $0.providerKind
+                    )
+                }
+                return Self(choice: choice, source: .library(.init(
+                    section: section,
+                    isLoading: row.isLoading, failure: row.failure, browseItem: row.browseItem,
+                    issue: issue, collectionCardStyle: row.collectionCardStyle
+                )))
+            }
         }
     }
 }

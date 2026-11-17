@@ -39,6 +39,9 @@ first-class backends; co-equal with `ProviderJellyfin`.
 - **Tokens never logged.** `X-Plex-Token` flows through `CoreNetworking`
   redaction; PIN values are never persisted (see `PlexPinFlow`).
 - **All errors become `AppError`.**
+- Lenient scalar decoders check key presence before trying alternate types.
+  Sparse stream records must not construct decoding errors for absent optional
+  fields; present values retain the existing conversion order and metadata.
 - **Co-equal with `ProviderJellyfin`.** Any new `MediaProvider` capability
   must ship for Plex whenever it ships for Jellyfin (and vice versa).
 - Home-user identity changes happen **in-memory only** — Plozz never
@@ -87,6 +90,17 @@ Plex DVR tuning uses the lineup's native channel `id`, never its display number
 (`vcn`). Channels without display numbers remain playable. Native IDs are
 validated as a single path component; invalid IDs do not fall back to another
 channel or tuner.
+
+Tune responses may wrap `MediaGrabOperation` in `MediaSubscription`.
+Playback parsing follows that envelope but excludes its `Timeline` and
+`AlsoAiring` guide metadata: those records must not select a stream or change
+the owned session's cleanup identity.
+
+Live TV uses the native HLS player. Only known, native-compatible source codecs
+enable Plex's `directPlay` flag; MPEG-2, incompatible audio, and unknown codec
+metadata request H.264/AAC compatibility conversion. The decision and start
+requests share that profile and viewer identity. Compatible H.264/HEVC channels
+retain direct playback.
 
 Failed tune requests use the consent-gated playback diagnostics sink under
 `plexLiveTune`. Evidence retains HTTP status, numeric Plex failure status,
@@ -376,6 +390,15 @@ selection, quality limits, or server-transcode negotiation.
 
 Tests: `ProviderPlexTests` covers MKV and MP4 original-file playback, scrubbing,
 selected media versions, and the separately preserved offline-download URL.
+
+New reduced offline requests use a single native download-queue MP4 with
+H.264/AAC and `DirectPlayStreamSelection=true` in the all-context client profile.
+They retain every audio track without setting `audioStreamID` or changing the
+server's saved selection. The requested bitrate, resolution and exact media/part
+indices remain pinned. Actual audio inventory, resolution and complete media
+samples are validated before completion; playback uses the normal language
+preference against local tracks. Legacy single-audio requests remain compatible.
+See [MediaDownloads](../MediaDownloads/README.md#download-quality-and-tracks).
 
 ## Playback session reporting
 

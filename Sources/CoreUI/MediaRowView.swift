@@ -85,6 +85,7 @@ public struct MediaRowHeader: View {
 
     private var heading: some View {
         let header = title.font(PlozzRailTitle.font(sectionHeaderFontSize: metrics.sectionHeaderFontSize))
+            .accessibilityAddTraits(.isHeader)
         return Group {
             if redactionReasons.contains(.placeholder) {
                 header
@@ -210,6 +211,7 @@ public struct MediaRowView: View {
     #if os(tvOS)
     @Environment(\.mediaRowHeaderTrailingInset) private var pageTrailingSafeInset
     @State private var portraitViewportWidth: CGFloat = 0
+    @Environment(\.mediaRowSizingViewportWidth) private var sizingViewportWidth
     @State private var trailingSafeInset: CGFloat = 0
     #endif
 
@@ -251,10 +253,10 @@ public struct MediaRowView: View {
     private let onCardFocused: ((MediaItem) -> Void)?
     private let onItemExposed: ((MediaItem) -> Void)?
     private let isExposureActive: Bool
-    /// Optional localized cue drawn on selected card kinds (e.g. a Related row
+    /// Optional cue drawn on selected card kinds (e.g. a Related row
     /// marks sequels/spin-offs as "Continues"). The row owns card construction,
     /// so callers need this seam rather than rebuilding the whole rail.
-    private let statusCue: ((MediaItem) -> LocalizedStringResource?)?
+    private let statusCue: ((MediaItem) -> Text?)?
     /// Cards retained by a stale Watchlist row after their removal was accepted.
     private let pendingRemovalIDs: Set<String>
     /// Stable lookup tables so focus/prefetch hot paths avoid repeated linear scans.
@@ -309,7 +311,7 @@ public struct MediaRowView: View {
         onCardFocused: ((MediaItem) -> Void)? = nil,
         onItemExposed: ((MediaItem) -> Void)? = nil,
         isExposureActive: Bool = true,
-        statusCue: ((MediaItem) -> LocalizedStringResource?)? = nil,
+        statusCue: ((MediaItem) -> Text?)? = nil,
         pendingRemovalIDs: Set<String> = [],
         loadingPlaceholderCount: Int = 0,
         reservesLoadingFocus: Bool = false,
@@ -375,7 +377,7 @@ public struct MediaRowView: View {
         onCardFocused: ((MediaItem) -> Void)? = nil,
         onItemExposed: ((MediaItem) -> Void)? = nil,
         isExposureActive: Bool = true,
-        statusCue: ((MediaItem) -> LocalizedStringResource?)? = nil,
+        statusCue: ((MediaItem) -> Text?)? = nil,
         pendingRemovalIDs: Set<String> = [],
         loadingPlaceholderCount: Int = 0,
         reservesLoadingFocus: Bool = false,
@@ -670,6 +672,9 @@ public struct MediaRowView: View {
                         portraitViewportWidth = width
                     }
                     #endif
+                    #if os(tvOS)
+                    .modifier(HomeRowPreviewScrollViewport())
+                    #endif
                     .padding(.top, layoutMetrics.railTopClearanceOffset)
                     .padding(.bottom, layoutMetrics.railBottomClearanceOffset)
                     .coordinateSpace(name: episodeEntrySpace)
@@ -764,10 +769,11 @@ public struct MediaRowView: View {
                     // it sits (last far-right, first far-left, or middle), with no
                     // repositioning. This mirrors the season bar's own ScrollView-level
                     // `.focusSection()` (which makes UP work the same way) and the hero
-                    // action row (commit eddd937e). Ordinary rows (Home, detail children —
-                    // `gatesFocus == false`) stay UNsectioned so vertical navigation
+                    // action row (commit eddd937e). Ordinary rows leave this inner
+                    // viewport unsectioned so vertical navigation
                     // keeps tvOS's column-aligned X-projection (the "focus jumps to the
-                    // opposite side" bug, commit f812fe64).
+                    // opposite side" bug, commit f812fe64). Showcase bridges empty
+                    // gutters to the nearest edge card with native focus guides.
                     .focusSectionIf(gatesFocus || episodeEntry != nil)
                     .navigationEntryFocus(reservesLoadingFocus && !items.isEmpty ? .content : nil)
                     .onAppear { applyInitialFocus(using: proxy) }
@@ -1055,7 +1061,7 @@ public struct MediaRowView: View {
         case .poster:
             #if os(tvOS)
             return metrics.portraitRowSlotWidth(
-                viewportWidth: portraitViewportWidth,
+                viewportWidth: sizingViewportWidth ?? portraitViewportWidth,
                 leadingInset: leadingInset,
                 cardStyle: cardStyle
             )

@@ -115,6 +115,11 @@ final class HomeMultiServerLoadingTests: XCTestCase {
             currentVisibility: { visibility }
         )
         defer { model.invalidate() }
+        let firstPaint = model.loadingPresentationContent
+        XCTAssertEqual(firstPaint.serverRows.map(\.definition.id), definitions.map(\.id))
+        XCTAssertEqual(firstPaint.collectionRows.map(\.definition.id), [collection.id])
+        XCTAssertTrue(firstPaint.librarySections.isEmpty, "Do not invent unknown library inventory.")
+        XCTAssertNil(model.state.value, "Planning must not start loading or publish fake content.")
         let loading = Task { await model.load() }
         defer { loading.cancel() }
         let deadline = ContinuousClock.now + .seconds(2)
@@ -122,6 +127,7 @@ final class HomeMultiServerLoadingTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(5))
         }
         let initial = try XCTUnwrap(model.state.value)
+        XCTAssertEqual(initial, firstPaint, "Preparation must not replace the known first-paint plan.")
         XCTAssertEqual(initial.serverRows.map(\.definition.id), definitions.map(\.id))
         XCTAssertTrue(initial.serverRows.allSatisfy { $0.isLoading && $0.items.isEmpty && $0.failure == nil })
         XCTAssertEqual(initial.collectionRows.map(\.definition.id), [collection.id])
@@ -518,6 +524,17 @@ final class HomeSettingsReturnTests: XCTestCase {
         XCTAssertEqual(loaded.count, duringLoading ? 2 : 40)
         app.screenshotDirector.tab = "settings"
         try await wait { app.isSettingsPresented && !model.isRefreshing }
+        XCTAssertFalse(app.allowsHomeContentLoading)
+        XCTAssertTrue(app.allowsHomeContentAccess)
+        let snapshot = try XCTUnwrap(model.state.value)
+        XCTAssertEqual(
+            try model.contentSnapshot(for: .continueWatching, visibility: app.settings.homeVisibility.visibility),
+            snapshot.continueWatching
+        )
+        XCTAssertEqual(
+            try model.contentSnapshot(for: .watchlist, visibility: app.settings.homeVisibility.visibility),
+            snapshot.watchlist
+        )
         let before = requests.home.withLock { $0 }
         try await Task.sleep(for: .seconds(2))
         XCTAssertEqual(requests.home.withLock { $0 }, before, "Home must remain paused behind Settings.")

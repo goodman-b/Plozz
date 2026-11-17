@@ -5,6 +5,81 @@ import CoreNetworking
 
 // MARK: - Pure logic
 
+final class PlexScalarDecodingTests: XCTestCase {
+    private struct Scalars: Decodable {
+        let bool: Bool?
+        let int: Int?
+        let double: Double?
+        let string: String?
+
+        private enum CodingKeys: String, CodingKey { case value }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            bool = container.flexibleBool(.value)
+            int = container.flexibleInt(.value)
+            double = container.flexibleDouble(.value)
+            string = container.flexibleString(.value)
+        }
+    }
+
+    func testMissingNullAndUnsupportedValuesRemainAbsent() throws {
+        for json in ["{}", #"{"value":null}"#, #"{"value":[]}"#, #"{"value":{}}"#] {
+            let value = try JSONDecoder.plozz.decode(Scalars.self, from: Data(json.utf8))
+            XCTAssertNil(value.bool, json)
+            XCTAssertNil(value.int, json)
+            XCTAssertNil(value.double, json)
+            XCTAssertNil(value.string, json)
+        }
+    }
+
+    func testNativeAndStringRepresentationsKeepExistingConversions() throws {
+        let cases: [(String, Bool?, Int?, Double?, String?)] = [
+            ("true", true, nil, nil, nil),
+            ("false", false, nil, nil, nil),
+            ("0", false, 0, 0, "0"),
+            ("8", true, 8, 8, "8"),
+            ("8.75", nil, 8, 8.75, "8.75"),
+            (#""8""#, nil, 8, 8, "8"),
+            (#""8.75""#, nil, nil, 8.75, "8.75"),
+            (#""1""#, true, 1, 1, "1"),
+            (#""0""#, false, 0, 0, "0"),
+            (#""TRUE""#, true, nil, nil, "TRUE"),
+            (#""false""#, false, nil, nil, "false"),
+            (#""yes""#, true, nil, nil, "yes"),
+            (#""NO""#, false, nil, nil, "NO"),
+            (#""unknown""#, nil, nil, nil, "unknown"),
+            (#""""#, nil, nil, nil, "")
+        ]
+        for (json, bool, int, double, string) in cases {
+            let value = try JSONDecoder.plozz.decode(
+                Scalars.self, from: Data("{\"value\":\(json)}".utf8)
+            )
+            XCTAssertEqual(value.bool, bool, json)
+            XCTAssertEqual(value.int, int, json)
+            XCTAssertEqual(value.double, double, json)
+            XCTAssertEqual(value.string, string, json)
+        }
+    }
+
+    func testSparseSubtitleDoesNotLoseAvailableFacts() throws {
+        let stream = try JSONDecoder.plozz.decode(PlexStream.self, from: Data(
+            #"{"id":"42","streamType":3,"codec":"srt","languageCode":"eng","forced":0,"hearingImpaired":"1","key":"/library/streams/42"}"#.utf8
+        ))
+        XCTAssertEqual(stream.id, 42)
+        XCTAssertEqual(stream.streamType, 3)
+        XCTAssertEqual(stream.codec, "srt")
+        XCTAssertEqual(stream.languageCode, "eng")
+        XCTAssertEqual(stream.forced, false)
+        XCTAssertEqual(stream.hearingImpaired, true)
+        XCTAssertEqual(stream.key, "/library/streams/42")
+        XCTAssertNil(stream.width)
+        XCTAssertNil(stream.frameRate)
+        XCTAssertNil(stream.channels)
+        XCTAssertNil(stream.DOVIPresent)
+    }
+}
+
 final class PlexPinFlowTests: XCTestCase {
     func testPendingWhenAuthTokenNil() {
         let pin = decodePin(#"{"id":1,"code":"abcd","authToken":null}"#)
@@ -2044,6 +2119,32 @@ final class PlexProviderMappingTests: XCTestCase {
         )
     }
 
+    func testOfflineTranscodeAllAudioRemovesInheritedSelectionWithoutChangingSourceOrQuality() throws {
+        let hls = try XCTUnwrap(URL(string:
+            "https://example.test/plex/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F7&mediaIndex=2&partIndex=1&AudioStreamID=99&X-Plex-Token=secret"))
+        let url = try XCTUnwrap(PlexOfflineTranscodeURLBuilder.makeURL(
+            from: hls, maximumVideoBitrateBps: 1_000_000, maximumHeight: 360,
+            audioStreamID: 11, textSubtitleStreamID: nil, includesTextSubtitle: false,
+            includesAllAudioTracks: true))
+        let query = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
+        func value(_ name: String) -> String? { query.first { $0.name == name }?.value }
+        XCTAssertFalse(query.contains { $0.name.lowercased() == "audiostreamid" })
+        XCTAssertEqual(value("path"), "/library/metadata/7")
+        XCTAssertEqual(value("mediaIndex"), "2")
+        XCTAssertEqual(value("partIndex"), "1")
+        XCTAssertEqual(value("X-Plex-Token"), "secret")
+        XCTAssertEqual(value("maxVideoBitrate"), "1000")
+        XCTAssertEqual(value("videoResolution"), "640x360")
+        XCTAssertTrue(try XCTUnwrap(value("X-Plex-Client-Profile-Extra"))
+            .hasSuffix("+add-settings(DirectPlayStreamSelection=true)"))
+        XCTAssertEqual(
+            PlexOfflineTranscodeURLBuilder.downloadQueueProfile(includesAllAudioTracks: true),
+            "add-transcode-target(type=videoProfile&context=all&protocol=http&container=mp4&videoCodec=h264&audioCodec=aac&subtitleCodec=mov_text&replace=true)+add-settings(DirectPlayStreamSelection=true)"
+        )
+        XCTAssertFalse(PlexOfflineTranscodeURLBuilder.downloadQueueProfile(includesAllAudioTracks: false)
+            .contains("DirectPlayStreamSelection"))
+    }
+
     func testOfflineTranscodeDownloadQueueURLPreservesProxyAndAuth() throws {
         let progressiveURL = try XCTUnwrap(
             URL(
@@ -2286,6 +2387,39 @@ final class PlexProviderMappingTests: XCTestCase {
             }
         )
         XCTAssertNil(request.streamURL)
+    }
+
+    func testFLACMusicUsesOriginalAuthenticatedFileAtItsNativeSampleRate() async throws {
+        for sampleRate in [44_100, 96_000] {
+            let stub = StubHTTPClient()
+            stub.stub(pathSuffix: "/library/metadata/flac", json: """
+            {"MediaContainer":{"Metadata":[
+              {"ratingKey":"flac","type":"track","title":"FLAC fixture",
+               "Media":[{"id":7,"container":"flac","audioCodec":"flac",
+                 "Part":[{"id":8,"key":"/library/parts/8/music.flac","container":"flac",
+                   "Stream":[{"id":9,"streamType":2,"codec":"flac",
+                     "samplingRate":\(sampleRate),"channels":2,"bitrate":1200}]}]}]}
+            ]}}
+            """)
+            let provider = PlexProvider(session: makeSession(), accountID: "account", http: stub)
+            let request = try await provider.audioPlaybackInfo(for: "flac", queueContext: nil)
+            guard case .authenticatedHTTP(let locator) = request.playbackSource else {
+                return XCTFail("Expected an authenticated FLAC source")
+            }
+            XCTAssertEqual(locator.accountID, "account")
+            XCTAssertEqual(locator.resource.path, "library/parts/8/music.flac")
+            XCTAssertEqual(locator.formatHint.container, "flac")
+            XCTAssertEqual(locator.deliveryMode, .directFile)
+            XCTAssertEqual(locator.purpose, .audioStream)
+            XCTAssertFalse(request.isTranscoding)
+            XCTAssertEqual(request.quality?.isDirectPlay, true)
+            XCTAssertEqual(request.quality?.codec, "flac")
+            XCTAssertEqual(request.quality?.sampleRate, sampleRate)
+            XCTAssertEqual(request.quality?.channels, 2)
+            XCTAssertFalse(locator.resource.queryItems.contains {
+                $0.name.localizedCaseInsensitiveContains("token")
+            })
+        }
     }
 
     func testPlaybackInfoPrefersHDBIFWhenAvailable() async throws {

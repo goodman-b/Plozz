@@ -55,6 +55,7 @@ public struct DetailInformationSections: View {
     @State private var overviewVisibleHeight: CGFloat = 0
     @Environment(\.themePalette) private var palette
     @Environment(\.locale) private var locale
+    @Environment(\.plozzCardFocusStyle) private var cardFocusStyle
     @Environment(\.gradientBackgroundsEnabled) private var gradientEnabled
     @Environment(\.plozzShowsContentRatings) private var showsContentRatings
     @Environment(\.plozzReduceTransparency) private var reduceTransparency
@@ -512,10 +513,7 @@ public struct DetailInformationSections: View {
     #if os(tvOS)
     private var tvOverviewCard: some View {
         DetailReaderCard {
-            Text(item.title)
-                .font(.system(size: 38, weight: .semibold))
-                .foregroundStyle(palette.primaryText)
-                .fixedSize(horizontal: false, vertical: true)
+            PlozzDialogHeading(Text(item.title))
 
             if !item.genres.isEmpty {
                 Text(item.genres.prefix(3).joined(separator: ", "))
@@ -556,11 +554,10 @@ public struct DetailInformationSections: View {
             #if !os(tvOS)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showsFullOverview = false } label: {
-                        Image(systemName: "xmark")
-                            .foregroundStyle(palette.secondaryText)
-                    }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", systemImage: "xmark") { showsFullOverview = false }
+                        .labelStyle(.iconOnly)
+                        .foregroundStyle(palette.secondaryText)
                 }
             }
             #endif
@@ -1021,7 +1018,13 @@ public struct DetailInformationSections: View {
     }
 
     private var informationColumnSpacing: CGFloat {
-        DetailInformationLayout.gutter
+        #if os(tvOS)
+        if cardFocusStyle.usesSystemEffect {
+            // Both neighboring native cards can remain enlarged during a focus handoff.
+            return DetailInformationLayout.factColumnSpacing
+        }
+        #endif
+        return DetailInformationLayout.gutter
     }
 
     private var informationRowSpacing: CGFloat {

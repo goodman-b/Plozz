@@ -134,12 +134,14 @@ final class HandoffDiagnosticsRedactionTests: XCTestCase {
 
 final class ProviderKindTests: XCTestCase {
     func testDedicatedServersAreFirstClassProviders() {
-        XCTAssertEqual(Set(ProviderKind.allCases), [.jellyfin, .emby, .plex, .silo, .iptv, .mediaShare])
-        XCTAssertEqual(ProviderKind.allCases, [.jellyfin, .plex, .emby, .silo, .iptv, .mediaShare])
+        XCTAssertEqual(Set(ProviderKind.allCases), [.jellyfin, .emby, .plex, .silo, .iptv, .mediaShare, .subsonic])
+        XCTAssertEqual(ProviderKind.allCases, [.jellyfin, .plex, .emby, .silo, .iptv, .mediaShare, .subsonic])
         XCTAssertEqual(ProviderKind.jellyfin.displayName, "Jellyfin")
         XCTAssertEqual(ProviderKind.emby.displayName, "Emby")
         XCTAssertEqual(ProviderKind.plex.displayName, "Plex")
         XCTAssertEqual(ProviderKind.silo.displayName, "Silo")
+        XCTAssertEqual(ProviderKind.subsonic.displayName, "Navidrome (Subsonic)")
+        XCTAssertFalse(ProviderKind.subsonic.usesMediaBrowserAPI)
         XCTAssertFalse(ProviderKind.silo.usesMediaBrowserAPI)
         XCTAssertEqual(ProviderKind.mediaShare.displayName, "Media Share")
         XCTAssertTrue(ProviderKind.emby.usesMediaBrowserAPI)
@@ -593,12 +595,9 @@ final class SeasonEpisodeLabelTests: XCTestCase {
         )
     }
 
-    /// Comma-separated, not dotted. The chip already joins with `·` to attach the
-    /// duration, so the dotted `subtitle` form would render "S4 · E1 · 22m" and
-    /// read as three unrelated facts — while a bare space runs the two numbers
-    /// together as "S4 E1 · 22m".
-    func testPairsTheNumbersWithACommaSoTheyReadAsOneDesignation() {
-        XCTAssertEqual(episode(season: 4, number: 1).seasonEpisodeLabel, "S4, E1")
+    func testPairsSeasonAndEpisodeWithASpace() {
+        XCTAssertEqual(episode(season: 1, number: 3).seasonEpisodeLabel, "S1 E3")
+        XCTAssertEqual(episode(season: 4, number: 1).seasonEpisodeLabel, "S4 E1")
         XCTAssertEqual(episode(season: 4, number: 1).subtitle, "S4 · E1", "subtitle keeps its dotted form")
     }
 

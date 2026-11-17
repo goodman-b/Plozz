@@ -75,7 +75,8 @@ public final class HomeHeroRuntimeState {
     }
 
     func resetForLibraryVisibility(
-        disabledKeys: Set<String>, cached: [MediaItem], settings: HeroSettings?, requestContext: String
+        disabledKeys: Set<String>, cached: [MediaItem], settings: HeroSettings?, requestContext: String,
+        language: String = "en"
     ) {
         let previous = items
         let sameRequestContext = requestStatusContext == requestContext
@@ -85,7 +86,7 @@ public final class HomeHeroRuntimeState {
         cachedItems = HeroDiscoveryStatus.retainingRequestStatus(
             in: cached, from: previous, sameRequestContext: sameRequestContext
         )
-        cachedKey = HeroConfigurationKey(settings: settings)
+        cachedKey = HeroConfigurationKey(settings: settings, language: language)
         requestStatusContext = requestContext
     }
 
@@ -158,6 +159,7 @@ final class HomeNavigationActivity {
 public enum HomeBrowseDestination: Hashable {
     case row(HomeRowBrowseModel)
     case watchlist
+    case upcoming
 
     @MainActor
     public func push(onto path: Binding<NavigationPath>, chrome: NavigationChromeModel? = nil) {
@@ -321,6 +323,7 @@ public struct HomeView: View {
     public init(
         viewModel: HomeViewModel,
         visibility: HomeLibraryVisibilityModel,
+        metadataLanguage: String = "en",
         spoilerSettings: SpoilerSettings = .default,
         heroSettings: HeroSettingsModel? = nil,
         heroBackground: HeroBackgroundSettingsModel,
@@ -406,8 +409,8 @@ public struct HomeView: View {
         if !heroRuntime.hasHydratedCache {
             heroRuntime.hasHydratedCache = true
             if let settings = Self.curationSettings(for: heroSettings?.effectiveSettings),
-               let cached = viewModel.cachedHeroItems(for: settings) {
-                heroRuntime.cachedKey = HeroConfigurationKey(settings: settings)
+               let cached = viewModel.cachedHeroItems(for: settings, language: metadataLanguage) {
+                heroRuntime.cachedKey = HeroConfigurationKey(settings: settings, language: metadataLanguage)
                 heroRuntime.cachedDisabledLibraryKeys = visibility.visibility.disabledKeys
                 heroRuntime.cachedItems = cached
             }
@@ -426,7 +429,8 @@ public struct HomeView: View {
         let _ = PlozzBodyRate.tick("HomeView")
         return ContentStateView(
             state: HomePresentationRow.displayState(
-                viewModel.state, liveTV: liveTV, visibility: visibility.visibility
+                viewModel.state, liveTV: liveTV, visibility: visibility.visibility,
+                upcoming: viewModel.upcoming.homeReleases
             ),
             emptyMessage: "Your libraries are empty. Add media on your media server to see it here.",
             onRetry: { Task { await viewModel.load() } },
@@ -461,7 +465,7 @@ public struct HomeView: View {
                 failures: viewModel.rowFailures,
                 skeletonLayout: viewModel.skeletonLayout
             )
-            let presentationRows = HomePresentationRow.resolve(
+            let presentationRows = viewModel.presentationRows(
                 rows: rows, content: content, visibility: visibility.visibility, liveTV: liveTV,
                 presentation: libraryPresentation?.settings ?? .default
             )
@@ -490,7 +494,8 @@ public struct HomeView: View {
                 watchlistMembershipRevision: watchlistIntentRevision,
                 disabledLibraryKeys: visibility.visibility.disabledKeys,
                 discoveryUsesWatchlist: heroDiscoveryProvider != nil,
-                awaitingLiveHome: !viewModel.loadingRows.isEmpty
+                awaitingLiveHome: !viewModel.loadingRows.isEmpty,
+                language: locale.identifier
             )
             // Seed the hero synchronously from the already-loaded sources
             // (Continue Watching + Watchlist) so it renders in the *same frame* as
@@ -685,14 +690,20 @@ public struct HomeView: View {
                                                 onBrowse: browseAction(for: presentation)
                                             )
                                         case let .library(row):
-                                            libraryRowView(row, onBrowse: browseAction(for: presentation))
+                                            if presentation.id == .global(.comingSoon) {
+                                                UpcomingHomeRow(title: row.section.displayName, releases: viewModel.upcoming.homeReleases) {
+                                                    onBrowse(.upcoming)
+                                                }
+                                            } else {
+                                                libraryRowView(row, onBrowse: browseAction(for: presentation))
                                                 .environment(
                                                     \.plozzLandscapeTitleLogo,
                                                     presentation.choice.collectionSection?.titleLogo ?? .off
                                                 )
+                                            }
                                         case let .liveTV(channels):
                                             MediaRowView(
-                                                title: Text("Live TV"), items: [], style: .landscape,
+                                                title: liveTVTitle, items: [], style: .landscape,
                                                 liveChannels: channels, onSelect: { _ in }
                                             )
                                         }
@@ -807,10 +818,10 @@ public struct HomeView: View {
             await heroRuntime.freshnessRefresh.runWhileVisible()
         }
         .onChange(of: visibility.visibility.disabledKeys) { _, disabled in
-            let cached = curationSettings.flatMap { viewModel.cachedHeroItems(for: $0) } ?? []
+            let cached = curationSettings.flatMap { viewModel.cachedHeroItems(for: $0, language: locale.identifier) } ?? []
             heroRuntime.resetForLibraryVisibility(
                 disabledKeys: disabled, cached: cached, settings: curationSettings,
-                requestContext: seasonRequestContextID
+                requestContext: seasonRequestContextID, language: locale.identifier
             )
         }
         .onChange(of: seasonRequestContextID) { _, context in
@@ -902,6 +913,20 @@ public struct HomeView: View {
                 navigationActivity: navigationActivity
             )
         )
+        .contentRefreshSurface(
+            id: ContentRefreshSurfaceID(kind: .home),
+            isVisible: heroIsFrontmost
+        ) { request in
+            switch request.action {
+            case .reloadHome:
+                await viewModel.loadIfNeeded(
+                    for: visibility.visibility,
+                    trigger: request.reason.diagnosticTrigger
+                )
+            case .reloadSeriesContext, .refreshWatchStateOnly:
+                break
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .identityIndexDidUpdate)) { _ in
             // The cross-server index warmed further; re-fold the fuller source set
             // into the loaded cards in place so a title that cold-loaded before its
@@ -969,7 +994,7 @@ public struct HomeView: View {
                 isGlobalRowEnabled: visibility.isGlobalRowEnabled,
                 loadingRows: viewModel.loadingRows, failures: viewModel.rowFailures
             )
-            if HomePresentationRow.resolve(
+            if viewModel.presentationRows(
                 rows: rows, content: content, visibility: visibility.visibility, liveTV: liveTV,
                 presentation: libraryPresentation?.settings ?? .default
             ).isEmpty, visibility.visibility.rowSections(choices: choices).enabled.isEmpty {
@@ -1131,7 +1156,7 @@ public struct HomeView: View {
         // the ones it actually supplied: a watchlist title handed to the Featured
         // source would arrive with no availability and render the wrong CTA.
         let seedMatchesConfiguration =
-            heroRuntime.cachedKey == HeroConfigurationKey(settings: settings)
+            heroRuntime.cachedKey == HeroConfigurationKey(settings: settings, language: locale.identifier)
             && heroRuntime.cachedDisabledLibraryKeys == key.disabledLibraryKeys
         let cachedFeatured = seedMatchesConfiguration
             ? HeroDiscoveryStatus.attributedFeaturedCandidates(
@@ -1175,7 +1200,7 @@ public struct HomeView: View {
                         fresh = await heroDiscoveryProvider(
                             HeroDiscoveryRequest(
                                 limit: limit,
-                                language: locale.language.languageCode?.identifier ?? "en",
+                                language: Locale.canonicalLanguageIdentifier(from: locale.identifier),
                                 region: locale.region?.identifier ?? "US",
                                 seeds: content.watchlist
                             ),
@@ -1251,7 +1276,11 @@ public struct HomeView: View {
             await enrichMetadata(enrichmentItems)
         }
         guard !Task.isCancelled else { return }
-        let stableItems = heroCurator.deduplicating(enriched)
+        let stableItems = heroCurator.reconcile(
+            heroCurator.deduplicating(enriched), settings: settings,
+            watchMutations: durableWatchMutations + heroRuntime.watchMutations,
+            preservesLineup: settings.style == .followsFocus
+        )
         // Fold the fresh curation into whatever is already on screen instead of
         // replacing it, so a background refresh the viewer never asked for cannot
         // reshuffle the carousel, wipe the backdrop or move what they were looking
@@ -1272,7 +1301,7 @@ public struct HomeView: View {
         let onScreen = foldsIntoLoadedSet && !heroRuntime.items.isEmpty
             ? heroRuntime.items
             : (seedMatchesConfiguration ? heroRuntime.cachedItems : [])
-        let updatedPool = result.candidatePool.updatingItems(stableItems)
+        let updatedPool = result.candidatePool.updatingItems(enriched)
         let sourceEligibility = heroSourceEligibility(
             content: content,
             randomLibraries: randomLibraries,
@@ -1295,7 +1324,8 @@ public struct HomeView: View {
             current,
             settings: settings,
             watchMutations: durableWatchMutations + heroRuntime.watchMutations,
-            preservesLineup: settings.style == .followsFocus
+            preservesLineup: settings.style == .followsFocus,
+            verifiedWatchItems: enriched
         )
         let merge = HeroLiveMerge.merge(
             showing: showing,
@@ -1328,7 +1358,8 @@ public struct HomeView: View {
             viewModel.clearCachedHeroItems()
         } else {
             viewModel.cacheHeroCandidatePool(
-                durablePool, for: settings, preservingUnseen: settings.style == .followsFocus
+                durablePool, for: settings, preservingUnseen: settings.style == .followsFocus,
+                language: locale.identifier
             )
         }
         let elapsedMS = Int(Date().timeIntervalSince(started) * 1_000)
@@ -1393,7 +1424,7 @@ public struct HomeView: View {
     ) -> some View {
         if let failure = row.failure, row.items.isEmpty, row.libraries.isEmpty {
             rowFailureView(
-                title: Text(row.title), error: failure,
+                title: row.displayName, error: failure,
                 report: row.kind == .continueWatching
                     ? viewModel.continueWatchingDiagnostic.map(PlaybackDiagnosticReport.library) : nil
             )
@@ -1403,6 +1434,7 @@ public struct HomeView: View {
     }
 
     private func browseAction(for row: HomePresentationRow) -> (() -> Void)? {
+        if row.id == .global(.comingSoon) { return { onBrowse(.upcoming) } }
         guard row.canBrowse else { return nil }
         if row.id == .global(.watchlist) { return { onBrowse(.watchlist) } }
         return { onBrowse(.row(viewModel.browseRow(row))) }
@@ -1415,7 +1447,7 @@ public struct HomeView: View {
         switch row.kind {
         case .continueWatching:
             MediaRowView(
-                title: Text(row.title), items: row.items, style: visibility.continueWatchingLayout.cardStyle,
+                title: row.displayName, items: row.items, style: visibility.continueWatchingLayout.cardStyle,
                 spoilerSettings: spoilerSettings, showsSeriesArtwork: visibility.continueWatchingUsesSeriesArtwork,
                 loadingPlaceholderCount: row.loadingPlaceholderCount,
                 reservesLoadingFocus: reservesLoadingFocus,
@@ -1429,7 +1461,7 @@ public struct HomeView: View {
             .environment(\.plozzArtworkArea, .continueWatching)
         case .watchlist:
             MediaRowView(
-                title: Text(row.title),
+                title: row.displayName,
                 items: row.items,
                 style: posterStyle(row.style),
                 spoilerSettings: spoilerSettings,
@@ -1445,7 +1477,7 @@ public struct HomeView: View {
             .browsingRow(row.items.isEmpty ? nil : onBrowse)
         case .recentlyAdded:
             MediaRowView(
-                title: Text(row.title), items: row.items, style: posterStyle(row.style),
+                title: row.displayName, items: row.items, style: posterStyle(row.style),
                 spoilerSettings: spoilerSettings, loadingPlaceholderCount: row.loadingPlaceholderCount,
                 reservesLoadingFocus: reservesLoadingFocus,
                 onSelect: onSelectItem
@@ -1532,7 +1564,7 @@ public struct HomeView: View {
             )
         }
         var result: [(row: FocusHeroRow, source: FocusHomeRowSource)] = []
-        for presentation in HomePresentationRow.resolve(
+        for presentation in viewModel.presentationRows(
             rows: rows, content: content, visibility: visibility.visibility, liveTV: liveTV,
             presentation: libraryPresentation?.settings ?? .default, showsEmptySectionMessages: false
         ) {
@@ -1731,7 +1763,7 @@ public struct HomeView: View {
         switch source {
         case .liveTV(let channels):
             MediaRowView(
-                title: Text("Live TV"), items: [], style: .landscape,
+                title: liveTVTitle, items: [], style: .landscape,
                 onFocusEntered: reporter.entered,
                 liveChannels: channels, onLiveChannelFocused: reporter.focusedLiveChannel,
                 onSelect: { _ in }
@@ -1740,7 +1772,7 @@ public struct HomeView: View {
             let onBrowse = presentation.flatMap { browseAction(for: $0) }
             if let failure = row.failure, row.items.isEmpty, row.libraries.isEmpty {
                 rowFailureView(
-                    title: Text(row.title), error: failure,
+                    title: row.displayName, error: failure,
                     report: row.kind == .continueWatching
                         ? viewModel.continueWatchingDiagnostic.map(PlaybackDiagnosticReport.library) : nil,
                     onFocusEntered: reporter.entered
@@ -1749,7 +1781,7 @@ public struct HomeView: View {
                 switch row.kind {
                 case .continueWatching:
                     MediaRowView(
-                        title: Text(row.title),
+                        title: row.displayName,
                         items: row.items,
                         style: visibility.continueWatchingLayout.cardStyle,
                         spoilerSettings: spoilerSettings,
@@ -1769,7 +1801,7 @@ public struct HomeView: View {
                     .environment(\.plozzArtworkArea, .continueWatching)
                 case .watchlist:
                     MediaRowView(
-                        title: Text(row.title),
+                        title: row.displayName,
                         items: row.items,
                         style: posterStyle(row.style),
                         spoilerSettings: spoilerSettings,
@@ -1788,7 +1820,7 @@ public struct HomeView: View {
                     .browsingRow(row.items.isEmpty ? nil : onBrowse)
                 case .recentlyAdded:
                     MediaRowView(
-                        title: Text(row.title),
+                        title: row.displayName,
                         items: row.items,
                         style: posterStyle(row.style),
                         spoilerSettings: spoilerSettings,
@@ -1837,7 +1869,13 @@ public struct HomeView: View {
             let section = row.section
             let playsOnSelect = row.browseItem == nil && section.style == .landscape
                 && !CollectionCoverLayout.isCollectionGroup(section.items)
-            if let issue = row.issue {
+            if presentation.id == .global(.comingSoon) {
+                UpcomingHomeRow(
+                    title: section.displayName, releases: viewModel.upcoming.homeReleases,
+                    onFocusEntered: reporter.entered, onFocusChange: onFocusChange,
+                    onCardFocused: reporter.cardFocused
+                ) { onBrowse?() }
+            } else if let issue = row.issue {
                 sectionStatusView(issue, browseItem: row.browseItem)
                     .background { NativeFocusRegionObserver(onFocusEntered: reporter.entered) }
             } else if let failure = row.failure {
@@ -1954,13 +1992,18 @@ public struct HomeView: View {
         .disabled(viewModel.isRefreshing)
     }
 
+    private var liveTVTitle: Text {
+        visibility.visibility.homeRowName(for: .liveTV).map { Text(verbatim: $0) } ?? Text("Live TV")
+    }
+
     private func librariesRow(
         _ libraries: [AggregatedLibrary],
         onFocused: ((AggregatedLibrary) -> Void)? = nil
     ) -> some View {
         HomeLibrariesRow(
             libraries: libraries, onSelectLibrary: onSelectLibrary, onFocused: onFocused,
-            artworkSource: viewModel.libraryArtworkSource
+            artworkSource: viewModel.libraryArtworkSource,
+            title: visibility.visibility.homeRowName(for: .libraries).map { Text(verbatim: $0) } ?? Text("Libraries")
         )
     }
 
@@ -2033,13 +2076,14 @@ struct HeroRecomputeKey: Equatable {
         watchlistMembershipRevision: Int = 0,
         disabledLibraryKeys: Set<String> = [],
         discoveryUsesWatchlist: Bool = false,
-        awaitingLiveHome: Bool = false
+        awaitingLiveHome: Bool = false,
+        language: String = "en"
     ) {
         let activeSources = settings?.isActive == true ? settings?.sources ?? [] : []
         self.sources = activeSources
         self.maxItems = activeSources.isEmpty ? 0 : settings?.maxItems ?? 0
         self.hideWatched = activeSources.isEmpty ? false : settings?.hideWatched ?? false
-        self.configuration = HeroConfigurationKey(settings: settings)
+        self.configuration = HeroConfigurationKey(settings: settings, language: language)
         let includeSourceIDs = settings?.hideWatched == true
         self.continueWatching = activeSources.contains(.continueWatching)
             ? content.continueWatching.map {
@@ -2196,7 +2240,7 @@ enum HomeHeroDisplayResolver {
             if !reconciled.isEmpty { return reconciled }
         }
         guard let settings,
-              runtime.cachedKey == HeroConfigurationKey(settings: settings),
+              runtime.cachedKey == key.configuration,
               runtime.cachedDisabledLibraryKeys == key.disabledLibraryKeys,
               !runtime.cachedItems.isEmpty else {
             return []
@@ -2284,22 +2328,14 @@ struct HomeShareScanRefreshObserver: View {
     /// fan-out a second time (measured at 11s of duplicated network and CPU).
     @State private var hasChangeBaseline = false
 
-    /// Whether the app has actually been backgrounded.
-    ///
-    /// `scenePhase` reaches `.active` during launch too, so refreshing on every
-    /// arrival at `.active` reloaded Home moments after it had loaded. Only a
-    /// genuine return from background is the "expected reshuffle" moment.
-    @State private var hasBeenBackgrounded = false
-    @State private var hasPendingForegroundRefresh = false
     @State private var nextPollAt: ContinuousClock.Instant?
 
-    /// Show a pending change once nothing is in the way. Called both when a change
-    /// arrives and on every poll tick, so a viewer who is mid-browse when new
-    /// content lands still sees it as soon as they stop.
+    /// Show a pending share change once nothing is in the way. Foreground and
+    /// surface-return refreshes belong to `ContentRefreshCoordinator`; this
+    /// observer only reports changes the share scanner actually found.
     private func refreshIfSafe() {
         guard isFrontmost, scenePhase == .active else { return }
-        guard hasPendingForegroundRefresh || (hasPendingChange && isSafeToRefresh) else { return }
-        hasPendingForegroundRefresh = false
+        guard hasPendingChange && isSafeToRefresh else { return }
         hasPendingChange = false
         onRefresh()
     }
@@ -2351,18 +2387,10 @@ struct HomeShareScanRefreshObserver: View {
                 refreshIfSafe()
             }
             .onChange(of: scenePhase) { _, phase in
-                // Returning from background is the one moment a visible reshuffle
-                // is expected rather than jarring, and the most likely time for
-                // something to have arrived. Launch also passes through `.active`,
-                // and refreshing there just re-runs the load that is already in
-                // flight.
-                if phase == .background || phase == .inactive {
-                    hasBeenBackgrounded = true
-                } else if phase == .active, hasBeenBackgrounded {
-                    hasBeenBackgrounded = false
-                    hasPendingForegroundRefresh = true
-                    refreshIfSafe()
-                }
+                // Share changes can land while the app is inactive. This only
+                // flushes that pending catalog work; foreground content refresh
+                // belongs to ContentRefreshCoordinator.
+                if phase == .active { refreshIfSafe() }
             }
             .onChange(of: isFrontmost) { _, frontmost in
                 if frontmost { refreshIfSafe() }
@@ -2399,6 +2427,7 @@ struct HomeLibrariesRow: View {
     let onSelectLibrary: (MediaLibrary) -> Void
     var onFocused: ((AggregatedLibrary) -> Void)?
     var artworkSource: ((AggregatedLibrary) -> LibraryArtworkSource?)? = nil
+    var title: Text = Text("Libraries")
 
     @Environment(\.plozzMetrics) private var metrics
     @Environment(\.plozzCardStyle) private var cardStyle
@@ -2408,7 +2437,7 @@ struct HomeLibrariesRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.sectionTitleSpacing - titleTightening) {
-            Text("Libraries")
+            title
                 .accessibilityIdentifier("media-row-title")
                 .font(.system(size: metrics.sectionHeaderFontSize, weight: .bold))
                 .padding(.leading, PlozzTheme.Metrics.screenPadding + navigationContentInset)

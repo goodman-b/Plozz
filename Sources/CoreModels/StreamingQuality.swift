@@ -363,9 +363,12 @@ public struct StreamingPlaybackOptions: Hashable, Sendable {
                     && $0.isCommentary == audioTrack.isCommentary
             }) { return sameLanguage }
         }
-        return AudioLanguagePolicy.fallbackTrackID(preferredLanguages: preferredAudioLanguages, tracks: tracks)
-            .flatMap { id in tracks.first { $0.id == id } }
-            ?? tracks.first(where: \.isDefault) ?? tracks.first
+        for language in preferredAudioLanguages {
+            if let match = tracks.first(where: { LanguageMatch.matches($0.language, language) }) {
+                return match
+            }
+        }
+        return tracks.first(where: \.isDefault) ?? tracks.first
     }
 
     public func selectedSubtitle(in tracks: [MediaTrack]) -> MediaTrack? {
@@ -398,6 +401,12 @@ public protocol StreamingQualityProviding: MediaProvider {
 
 public extension StreamingQualityProviding {
     var streamingQualitySupport: StreamingQualitySupport { .standard }
+}
+
+/// Session cleanup that can survive an app handoff without persisting media
+/// URLs or reconstructing a playback request.
+public protocol StreamingSessionReleasing: StreamingQualityProviding {
+    func releaseStreamingSession(id: String) async
 }
 
 /// Opt-in maintenance of an already-started server rendition, including while paused.

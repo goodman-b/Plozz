@@ -15,6 +15,16 @@ session persistence.
   - `PasswordSignInService` + `PasswordSignInViewModel` +
     `PasswordSignInView` — username/password sign-in for Emby and the
     fallback for Jellyfin servers without Quick Connect.
+  - `SubsonicAuthViewModel` + `SubsonicSignInView` — direct
+    **Navidrome (Subsonic)** address/username/password-or-API-key sign-in.
+    Server address and credentials use separate shared form groups. A native
+    Password/API Key selector defaults to Password and clears the previous
+    secret when switched; only API Key shows a short compatibility note.
+    Offered separately below the primary mobile choices in development/TestFlight,
+    without a generic "music servers" submenu. Shared account reauthentication
+    retains profile, server/user identity and credential-revision checks.
+    Cancelled work cannot persist a late session; persistence failure remains
+    visible instead of dismissing the form.
 - **Session state machine** — `SessionStateMachine`. A pure `reduce`
   function over `(state, event) → state` (`launching → selectingServer →
   authenticating → authenticated → failed`). Unit-tested independently of
@@ -32,6 +42,9 @@ session persistence.
   per-flow views above. `BrandQRCodeView` renders the Quick Connect /
   Plex Link codes as scannable QR. `ConnectionCodeView` supplies the shared
   readable code panel for Quick Connect, Plex Link, Silo, and device setup.
+  Mobile sign-in forms use `settingsSignInFields()` for native placeholders,
+  persistent accessible names, and consistent input spacing. This does not
+  remove descriptive section context or change tvOS field presentation.
   `ServerAddressesView` uses the shared provider logo and Settings surfaces to
   separate server/sign-in identity, saved addresses, and address entry. Full
   addresses wrap without truncation, with the protocol labeled separately;
@@ -64,8 +77,10 @@ session persistence.
   20-point page insets and a 640-point content cap across the server flows.
   Welcome, Add Source, Silo, and IPTV page actions share `plozzPageActionLabel`
   inside native large buttons, including alternative sign-in methods.
-  The mobile navigation owner supplies top-leading Cancel at the modal root
-  and Back on subsequent steps. Silo and IPTV suppress their standalone
+  Navidrome's Sign In and Cancel actions also fill the form width on TV.
+  The mobile navigation owner supplies Cancel at the modal root and Back on
+  subsequent steps, using semantic cancellation placement and title-plus-symbol
+  labels so native bars can adapt their edge. Silo and IPTV suppress their standalone
   in-content cancellation when hosted in that flow; leaving a step cancels its
   authentication/import work. Plex preserves its selection-loss confirmation
   for both root Cancel and pushed Back.

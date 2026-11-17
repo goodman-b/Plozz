@@ -34,10 +34,12 @@ struct PresentationHostApp: App {
         }
         let model: PlozziOSAppModel
         if ProcessInfo.processInfo.arguments.contains("--libraries-in-more")
+            || ProcessInfo.processInfo.arguments.contains("--navigation-scroll-fixture")
             || ProcessInfo.processInfo.arguments.contains("--streaming-settings-source") {
             let accounts = AccountStore(secureStore: InMemorySecureStore())
             let provider = CollectionSettingsProvider(
-                includesAllLibrariesFixture: ProcessInfo.processInfo.arguments.contains("--all-libraries-fixture")
+                includesAllLibrariesFixture: ProcessInfo.processInfo.arguments.contains("--all-libraries-fixture"),
+                includesNavigationScrollFixture: ProcessInfo.processInfo.arguments.contains("--navigation-scroll-fixture")
             )
             let account = Account(id: "navigation-library", from: provider.session)
             let defaults = UserDefaults(suiteName: "MoreNavigationFixture.\(UUID().uuidString)")!
@@ -78,6 +80,8 @@ struct PresentationHostApp: App {
             model.settings.theme.theme = .pureBlack
         }
         model.settings.theme.gradientEnabled = true
+        model.settings.transparency.preference =
+            ProcessInfo.processInfo.arguments.contains("--opaque-navigation") ? .off : .system
         model.settings.playback.settings = .default
         if ProcessInfo.processInfo.arguments.contains("--reset-read-ahead") {
             PlaybackReadAheadStore().save(.default)
@@ -98,7 +102,14 @@ struct PresentationHostApp: App {
         if ProcessInfo.processInfo.arguments.contains("--navigation-interaction-fixture") {
             var available = NavigationDestinationDefaults.iOS
             let enabled: [String]
-            if ProcessInfo.processInfo.arguments.contains("--libraries-in-more") {
+            if ProcessInfo.processInfo.arguments.contains("--navigation-scroll-fixture") {
+                available.append("navigation-library:movies")
+                enabled = [
+                    NavigationLibraryLayout.homeKey, "navigation-library:movies",
+                    NavigationLibraryLayout.downloadsKey, NavigationLibraryLayout.settingsKey,
+                    NavigationLibraryLayout.searchKey
+                ]
+            } else if ProcessInfo.processInfo.arguments.contains("--libraries-in-more") {
                 let libraryKey = "navigation-library:movies"
                 available.append(libraryKey)
                 if ProcessInfo.processInfo.arguments.contains("--all-libraries-fixture") {
@@ -224,7 +235,25 @@ struct PresentationHostApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if ProcessInfo.processInfo.arguments.contains("--offline-review-fixture") {
+            if ProcessInfo.processInfo.arguments.contains("--upcoming-capture-fixture") {
+                UpcomingCaptureFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--detail-selection-fixture") {
+                DetailSelectionFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--content-refresh-return-fixture") {
+                ContentRefreshReturnFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--music-profile-fixture") {
+                MusicProfileFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--music-landing-fixture") {
+                MusicLandingFixture(
+                    palette: ProcessInfo.processInfo.arguments.contains("--music-light") ? .light :
+                        ProcessInfo.processInfo.arguments.contains("--music-oled") ? .pureBlack : .dark,
+                    textSize: ProcessInfo.processInfo.arguments.contains("--music-large-text") ? .accessibility3 : .large
+                )
+            } else if ProcessInfo.processInfo.arguments.contains("--music-detail-fixture") {
+                MusicDetailFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--music-player-fixture") {
+                MusicPlayerFixture()
+            } else if ProcessInfo.processInfo.arguments.contains("--offline-review-fixture") {
                 OfflineModeReviewFixture()
             } else if ProcessInfo.processInfo.arguments.contains("--home-empty-fixture") {
                 let palette = ProcessInfo.processInfo.arguments.contains("--light") ? ThemePalette.light : .dark
@@ -437,6 +466,7 @@ private struct CollectionSettingsInteractionFixture: View {
 
 private struct CollectionSettingsProvider: MediaProvider, CapabilityReporting, StreamingQualityProviding {
     var includesAllLibrariesFixture = false
+    var includesNavigationScrollFixture = false
     let kind: ProviderKind = .plex
     let capabilities: ProviderCapability = [.libraryCollections]
     let session = UserSession(
@@ -463,6 +493,12 @@ private struct CollectionSettingsProvider: MediaProvider, CapabilityReporting, S
     func continueWatching(limit: Int) async throws -> [MediaItem] { [] }
     func latest(limit: Int) async throws -> [MediaItem] { [] }
     func items(in containerID: String, kind: MediaItemKind, page: PageRequest) async throws -> MediaPage {
+        if includesNavigationScrollFixture {
+            return .init(
+                items: Array(navigationScrollItems.dropFirst(page.startIndex).prefix(page.limit)),
+                startIndex: page.startIndex, totalCount: navigationScrollItems.count
+            )
+        }
         guard includesAllLibrariesFixture else {
             return .init(items: [], startIndex: page.startIndex, totalCount: 0)
         }
@@ -475,7 +511,22 @@ private struct CollectionSettingsProvider: MediaProvider, CapabilityReporting, S
     }
     func item(id: String) async throws -> MediaItem { throw AppError.notFound }
     func children(of itemID: String) async throws -> [MediaItem] { [] }
-    func search(query: String, limit: Int) async throws -> [MediaItem] { [] }
+    func search(query: String, limit: Int) async throws -> [MediaItem] {
+        guard includesNavigationScrollFixture else { return [] }
+        return navigationScrollItems.prefix(limit).map {
+            var item = $0
+            item.title = "Search \(item.title)"
+            return item
+        }
+    }
+    private var navigationScrollItems: [MediaItem] {
+        (1...60).map {
+            .init(
+                id: "navigation-\($0)", title: String(format: "Navigation item %02d", $0), kind: .movie,
+                allowsTitleBasedMetadataMatching: false, sourceAccountID: "navigation-library"
+            )
+        }
+    }
     func playbackInfo(for itemID: String) async throws -> PlaybackRequest { throw AppError.notFound }
     func playbackInfo(
         for itemID: String, mediaSourceID: String?, forceTranscode: Bool,
@@ -642,6 +693,7 @@ private struct IPTVRemovalFixture: View {
 }
 
 private struct SettingsInteractionFixture: View {
+    @Environment(\.accessibilityReduceTransparency) private var systemReduceTransparency
     let appModel: PlozziOSAppModel
     @State private var language = AppLanguageSettingsModel()
     @State private var showingSettings = false
@@ -669,7 +721,7 @@ private struct SettingsInteractionFixture: View {
                 .environment(heroTrailers)
                 .task {
                     let arguments = ProcessInfo.processInfo.arguments
-                    if arguments.contains("--libraries-in-more") {
+                    if arguments.contains("--libraries-in-more") || arguments.contains("--navigation-scroll-fixture") {
                         await appModel.refreshNavigationLibraries()
                         precondition(!appModel.visibleNavigationLibraries.isEmpty, "The library fixture must discover Movies")
                     }
@@ -783,6 +835,9 @@ private struct SettingsInteractionFixture: View {
                 }
             }
         }
+        .plozzOpaqueNavigationChrome()
+        .environment(\.plozzReduceTransparency, appModel.settings.transparency.preference
+            .reducesTransparency(systemReduceTransparency: systemReduceTransparency))
         .environment(appModel)
         .environment(language)
         .environment(\.locale, Locale(identifier: "en_US"))

@@ -3,6 +3,7 @@ import AniListService
 import AppRuntime
 import CoreModels
 import CoreNetworking
+import CoreSecureStore
 import CoreUI
 import CrashReporting
 import EnginePlozzigen
@@ -20,6 +21,7 @@ import MediaDownloads
 import MediaTransportCore
 import MetadataKit
 import Observation
+import ProviderJellyfin
 import ProviderPlex
 import ProviderSilo
 import ProviderShare
@@ -32,6 +34,7 @@ import UIKit
 @MainActor
 @Observable
 final class PlozziOSAppModel {
+    let music: PlozziOSMusicRuntime? = AppReleaseChannel.current.isBeta ? PlozziOSMusicRuntime() : nil
     private let appAdmission: AppAdmissionModel
     let offlineMode: PlozziOSOfflineModeModel
     var isOfflineModeAvailable: Bool {
@@ -85,9 +88,10 @@ final class PlozziOSAppModel {
             && !accountsProviders.activeProfileAwaitsIdentity
     }
 
-    var allowsHomeContentLoading: Bool {
-        isActiveProfileAuthorized && !profiles.activeProfile.needsSetup && !isSettingsPresented
+    var allowsHomeContentAccess: Bool {
+        isActiveProfileAuthorized && !profiles.activeProfile.needsSetup
     }
+    var allowsHomeContentLoading: Bool { allowsHomeContentAccess && !isSettingsPresented }
     var allowsStandalonePlayback: Bool { admissionContext.explicitStandaloneChoice }
     var pendingStandaloneLiveTVEntry: Bool { appAdmission.pendingLiveTVEntry }
 
@@ -215,6 +219,13 @@ final class PlozziOSAppModel {
     @ObservationIgnored
     private(set) lazy var cloudSync: CloudConfigSyncService? = Self.makeCloudSync(for: self)
 
+    #if DEBUG
+    /// Replaces only the remote request in hosted tests; local erasure and the
+    /// profile/parental authorization checks still execute in the real entry point.
+    @ObservationIgnored
+    var cloudServerErasureForTesting: (@MainActor @Sendable () async -> CloudSyncRecoveryResult)?
+    #endif
+
     @ObservationIgnored
     private(set) lazy var liveTVPortableSync: LiveTVPortableSyncBridge? =
         Self.makeLiveTVPortableSync(profiles: profiles)
@@ -227,6 +238,19 @@ final class PlozziOSAppModel {
 
     @ObservationIgnored
     lazy var portableCredentialPublisher = Self.makePortableCredentialPublisher()
+
+    @ObservationIgnored
+    lazy var providerCredentialSync = ProviderCredentialSync(
+        accounts: accountStore,
+        enabled: { SyncSetupFeatureFlag().allowsAutomaticSync && !OfflineMode.shared.isEnabled },
+        canRestore: { [weak self] in self?.managementRequiresParentalPIN == false },
+        didRestore: { [weak self] in
+            guard let self else { return }
+            reloadAccountsAndCrashContext()
+            clearFirstRunStepIfHouseholdSetUp()
+            refreshPendingSyncedServers()
+        },
+        onProgress: { [weak self] in self?.initialSetupRestoration.recordProgress() })
 
     /// A same-Apple-ID device is asking to be set up; drives a one-tap source-side
     /// confirmation before any credential is pushed (nil = no pending offer).
@@ -247,6 +271,7 @@ final class PlozziOSAppModel {
 
     /// Observable CloudKit sync status for the Sync & Setup page.
     let cloudSyncStatus = CloudSyncStatus()
+    let initialSetupRestoration = InitialSetupRestoration()
 
     /// Persist a setup received over pairing: create accounts from the descriptors,
     /// store their transferred tokens in the Keychain, and refresh providers so the
@@ -291,9 +316,24 @@ final class PlozziOSAppModel {
         // the bundle the user already approved.
         if let seerr = received.secrets?.seerr {
             Self.installSeerrSecretIfAbsent(seerr)
+            if restrictToAccountID == nil, let url = URL(string: seerr.baseURL) {
+                do {
+                    try Self.seerrAccountConnectionStore().importLegacyIfAbsent(
+                        SeerConnection(baseURL: url, apiKey: seerr.apiKey), profiles: incomingProfiles
+                    )
+                } catch { PlozzLog.auth.error("Seerr legacy pairing could not restore profile connections") }
+            }
             // The service cached its config at init; reload so a connection that
             // arrived with this pairing is live now, not after the next launch.
             Task { [seerService] in await seerService.reloadConnection() }
+        }
+        if restrictToAccountID == nil, let seerrProfiles = received.secrets?.seerrProfiles {
+            do {
+                try Self.seerrAccountConnectionStore().importAPIKeysIfAbsent(
+                    seerrProfiles, allowedProfiles: Set(incomingProfiles.map(\.id))
+                )
+                Task { [seerService] in await seerService.reloadConnection() }
+            } catch { PlozzLog.auth.error("Seerr pairing could not restore profile connections") }
         }
         // Track credentialed accounts we ATTEMPT (expected to sign in without a tap)
         // vs those that actually persisted, so the caller can gate success and
@@ -444,7 +484,7 @@ final class PlozziOSAppModel {
     private(set) var requiresLaunchProfileSelection: Bool
     private(set) var settings: PlozziOSSettingsModel
     @ObservationIgnored
-    private var applicationIsActive = true
+    private(set) var applicationIsActive = true
     @ObservationIgnored
     private var downloadProfileGeneration = 0
     @ObservationIgnored
@@ -657,6 +697,7 @@ final class PlozziOSAppModel {
         appAdmissionStore: any AppAdmissionStoring = AppAdmissionStore(),
         accountStore suppliedAccountStore: AccountStore? = nil,
         profileStore: (any ProfilePersisting)? = nil,
+        seerService suppliedSeerService: SeerService? = nil,
         appLanguage: AppLanguageSettingsModel? = nil,
         runtimeFeatureFlags: RuntimeFeatureFlags = .buildDefault
     ) {
@@ -725,7 +766,7 @@ final class PlozziOSAppModel {
         )
         if offline { accountsProviders.localProviders = [:] }
         let shareScanStatus = ShareScanStatusModel()
-        let seerService = SeerServiceFactory.make(
+        let seerService = suppliedSeerService ?? SeerServiceFactory.make(
             connectionStore: HouseholdSeerConnectionStore(
                 secureStore: KeychainStore(service: "com.plozz.app.household")
             )
@@ -869,6 +910,9 @@ final class PlozziOSAppModel {
         accountsProviders.tokenResolver = { [weak self] accountID in
             self?.plexHomeUsers.resolvedToken(for: accountID)
         }
+        accountsProviders.onLocalAccountAuthentication = { [weak self] accountID in
+            self?.providerCredentialSync.didAuthenticateLocally(accountID: accountID)
+        }
         accountsProviders.onAccountsInvalidated = { [weak self] in
             self?.mediaItemActionHandler.invalidateAccountCaches()
             self?.universalWatchlistProfileID = nil
@@ -888,6 +932,7 @@ final class PlozziOSAppModel {
             guard let self else { throw CancellationError() }
             return try await self.plexHomeUsers.resolveCloudToken(for: account, expectedRevision: revision)
         }
+        accountsProviders.configureAuthenticatedArtwork()
         authenticatedHTTPResolver.configure { [weak accountsProviders] locator in
             guard let accountsProviders,
                   let account = accountsProviders.accounts.first(where: {
@@ -966,10 +1011,18 @@ final class PlozziOSAppModel {
             await prepareUniversalWatchlist()
         }
         applyCrashReportingPreference()
+        seerService.configureProfiles(
+            store: suppliedSeerService != nil || Self.isRunningUnitTests
+                ? InMemorySeerAccountConnectionStore()
+                : SeerAccountConnectionStore(secureStore: KeychainStore(service: "com.plozz.app.household")),
+            profiles: profiles.profilesForSync,
+            current: { [profiles] in profiles.activeProfile }
+        )
+        SeerProfileAuthentication.configure(
+            service: seerService, profiles: profiles, accounts: accountsProviders, plex: plexHomeUsers
+        )
         Task {
             guard !isOfflineMode else { return }
-            let namespaces = [nil] + profiles.profiles.map { Optional($0.id) }
-            await seerService.migrateLegacyConnectionIfNeeded(namespaces: namespaces)
             await seerService.refreshStatus()
         }
 
@@ -1007,6 +1060,7 @@ final class PlozziOSAppModel {
         identityIndex.reset()
         if enabled {
             accountsProviders.localProviders = [:]
+            providerCredentialSync.cancel()
             cloudPublishTask?.cancel()
             portableCredentialPublisher.cancelPendingPublication()
             await cloudSync?.deactivateAndCancel()
@@ -1200,6 +1254,7 @@ final class PlozziOSAppModel {
         sceneSessionIDs = sceneSessionIDs.filter { connected.contains($0.key) }
         if let transition = applicationLifecycle.replaceScenes(scenes) {
             applicationIsActive = transition.isActive
+            if !transition.isActive { portableCredentialPublisher.cancelPendingPublication() }
             if transition.isActive { retryWatchOutboxIfAllowed() }
         }
     }
@@ -1307,6 +1362,15 @@ final class PlozziOSAppModel {
         pendingSyncedServerPrompt = nil
         accountsProviders.reloadAccounts()
         guard accountsProviders.accounts.isEmpty else { return false }
+        do {
+            try LiveTVLastSeenStore.erase(
+                profileIDs: profiles.profiles.map(\.id), secureStore: LiveTVSourceStorage.catalogSecrets()
+            )
+        } catch {
+            PlozzLog.app.error("First-run reset could not erase Live TV last-seen rows")
+            accountError = error.localizedDescription
+            return false
+        }
         plexHomeUsers.resetAllForDebug()
         do {
             if afterSyncErasure { try profiles.resetToPristineDefaultAfterSyncErasure() }
@@ -1462,7 +1526,7 @@ final class PlozziOSAppModel {
     /// Resuming asks the question that was never answered: importing anyway is
     /// the leak the gate exists to prevent, and clearing it without asking is the
     /// same thing by another route.
-    func resumeProfileOnboardingIfNeeded() {
+    func resumeProfileOnboardingIfNeeded(manualICloudSetup: Bool = false) {
         // `profileOnboardingID` — not just the step — because creation claims the
         // id and origin synchronously and only raises the step a runloop turn
         // later (so the editor sheet can close first). Switching into the new
@@ -1474,7 +1538,7 @@ final class PlozziOSAppModel {
         guard profileOnboardingStep == nil, profileOnboardingID == nil,
               pendingFirstRunStep == nil, plexHomeUsers.pendingPlexUserSelection == nil,
               pendingLibrarySelection == nil else { return }
-        guard profiles.activeProfile.needsSetup else { return }
+        guard profiles.activeProfile.needsSetup || manualICloudSetup else { return }
         profileOnboardingID = profiles.activeProfileID
         profileOnboardingStep = .libraries
     }
@@ -1501,6 +1565,10 @@ final class PlozziOSAppModel {
         } else {
             profileOnboardingStep = nil
             profileOnboardingID = nil
+            if id == profiles.activeProfileID, profiles.profiles.contains(where: { $0.id == id }) {
+                initialSetupRestoration.completeManualSetup(for: id)
+                continueManualICloudSetupIfReady()
+            }
         }
     }
 
@@ -1904,6 +1972,7 @@ final class PlozziOSAppModel {
             await prepareUniversalWatchlist()
         }
 
+        seerService.synchronizeProfile()
         Task { await seerService.setActiveProfile(namespace: profiles.activeNamespace) }
     }
 
@@ -2051,7 +2120,8 @@ final class PlozziOSAppModel {
             accounts: accountsProviders.resolvedActiveAccounts,
             isAuthorized: isActiveProfileAuthorized,
             resolver: authenticatedHTTPResolver,
-            offlineResolver: downloads.offlineResolver
+            offlineResolver: downloads.offlineResolver,
+            networkFileResolver: mediaShareRuntime.networkFileResolver
         )
     }
 
@@ -2203,11 +2273,13 @@ final class PlozziOSAppModel {
         watchedPercent: Double
     ) {
         guard let mutation else { return }
-        var itemIDs = Set(mutation.optimisticTargets.map(\.itemID))
+        let targets = mutation.effectiveOptimisticTargets
+        guard !targets.isEmpty else { return }
+        var itemIDs = Set(targets.map(\.itemID))
         itemIDs.insert(item.id)
         MediaItemMutation(
             itemIDs: itemIDs,
-            scopedItemIDs: Set(mutation.optimisticTargets.map(\.id)),
+            scopedItemIDs: Set(targets.map(\.id)),
             played: mutation.played,
             resumePosition: mutation.resumePosition,
             playedPercentage: mutation.played == true
@@ -2469,6 +2541,7 @@ final class PlozziOSAppModel {
                 },
                 managedURLResolver: {
                     source,
+                    sourceUserID,
                     updateSource,
                     updatePreparationProgress in
                     let provider: (any MediaProvider)? = await MainActor.run {
@@ -2484,6 +2557,33 @@ final class PlozziOSAppModel {
                     guard let provider else {
                         throw MediaTransportError.authentication(
                             reason: "inactive managed download account"
+                        )
+                    }
+                    if source.provider == .emby, source.includesAllAudioTracks,
+                       source.quality != .original {
+                        guard let sourceUserID else { throw CancellationError() }
+                        let authorize: @Sendable () async throws -> Void = {
+                            try Task.checkCancellation()
+                            let permitted = await MainActor.run {
+                                !OfflineMode.shared.isEnabled
+                                    && accountsProviders.downloadUserID(
+                                        for: source.accountID, profileID: namespace
+                                    ) == sourceUserID
+                            }
+                            guard permitted else { throw CancellationError() }
+                        }
+                        return try await EmbyOfflineAudioDownload.prepare(
+                            source: source, authorize: authorize,
+                            provider: {
+                                try await authorize()
+                                let current = await MainActor.run {
+                                    accountsProviders.provider(forAccountID: source.accountID) as? JellyfinProvider
+                                }
+                                guard let current, current.kind == .emby else { throw AppError.unauthorized }
+                                return current
+                            },
+                            resolve: { try await authenticatedHTTPResolver.resolve($0) },
+                            updateSource: updateSource
                         )
                     }
                     if let silo = provider as? SiloProvider {
@@ -2531,11 +2631,6 @@ final class PlozziOSAppModel {
                         }
                         switch source.provider {
                         case .plex:
-                            guard !source.includesAllAudioTracks else {
-                                throw MediaTransportError.unsupportedCapability(
-                                    "Plex reduced-quality downloads support one audio track. Choose Original quality to keep every embedded track."
-                                )
-                            }
                             let audioStreamID = playback.audioTracks.first {
                                 track in
                                 source.preferredAudioLanguages.contains {
@@ -2567,7 +2662,9 @@ final class PlozziOSAppModel {
                                         textSubtitleStreamID:
                                             textSubtitleStreamID,
                                         includesTextSubtitle:
-                                            source.includesTextSubtitleTracks
+                                            source.includesTextSubtitleTracks,
+                                        includesAllAudioTracks:
+                                            source.includesAllAudioTracks
                                     ) else {
                                 throw MediaTransportError.unsupportedCapability(
                                     "This Plex server did not provide a compatible offline rendition."
@@ -2577,6 +2674,8 @@ final class PlozziOSAppModel {
                                 progressiveURL: constrainedURL,
                                 source: source,
                                 expectedDuration: playback.item.runtime,
+                                expectedAudioLanguages: source.includesAllAudioTracks
+                                    ? playback.audioTracks.map(\.language) : nil,
                                 updateSource: updateSource,
                                 updatePreparationProgress:
                                     updatePreparationProgress
@@ -2806,11 +2905,12 @@ final class PlozziOSAppModel {
             await updateTrackersForActiveProfile()
             await prepareUniversalWatchlist()
         }
+        seerService.synchronizeProfile()
         Task { await seerService.setActiveProfile(namespace: profiles.activeNamespace) }
     }
 
     var activeSeerrRequestIdentity: SeerRequestIdentity {
-        profiles.activeProfile.seerrRequestIdentity
+        seerService.requestIdentity
     }
 
     var activeSeerrRequestActingName: String? {
@@ -2819,7 +2919,7 @@ final class PlozziOSAppModel {
               !identity.requiresRelink(to: seerService.serverIdentity) else {
             return nil
         }
-        return profiles.activeProfile.seerrUserName
+        return seerService.requestAccountName
     }
 
     func setSeerrUser(_ user: SeerUser?, for profileID: String) {
@@ -2920,6 +3020,7 @@ final class PlozziOSAppModel {
                 let account = registration.account
                 // A (re)added server clears any household-removal tombstone for it.
                 clearRemovalTombstone(for: account.id)
+                providerCredentialSync.didAuthenticateLocally(accountID: account.id)
                 if registration.previousAccount == nil || activateIPTVAccount {
                     try accountsProviders.includeIPTVAccountInActiveProfile(account)
                     addedLiveTV = addedLiveTV || account.server.provider == .iptv
@@ -3103,6 +3204,8 @@ final class PlozziOSAppModel {
             appliesPlexIdentityAfterLibrarySelection = false
             plexHomeUsers.ensurePlexIdentityForActiveProfile()
         }
+        initialSetupRestoration.completeManualSetup(for: profiles.activeProfileID)
+        continueManualICloudSetupIfReady()
     }
 
     private func preparePostSignInOnboarding(
@@ -3181,6 +3284,8 @@ final class PlozziOSAppModel {
             // (and isn't re-offered to the user's other devices). Without this, sync's
             // auto-connect immediately re-adds the account the user just removed.
             removePortableCredential(id)
+            var pending = PendingSyncedServersStore()
+            pending.ignore(id)
             accountError = nil
         } catch {
             accountError = error.localizedDescription
@@ -3474,6 +3579,7 @@ private enum PlexOfflineDownloadQueue {
         progressiveURL: URL,
         source: ManagedHTTPDownloadSource,
         expectedDuration: TimeInterval?,
+        expectedAudioLanguages: [String?]?,
         updateSource: @escaping PlozziOSBackgroundHTTPDownloadEngine.SourceUpdater,
         updatePreparationProgress:
             @escaping PlozziOSBackgroundHTTPDownloadEngine.PreparationProgressUpdater
@@ -3601,7 +3707,8 @@ private enum PlexOfflineDownloadQueue {
                 return .init(
                     url: mediaURL,
                     expectedDuration: expectedDuration,
-                    cleanupURL: cleanupURL
+                    cleanupURL: cleanupURL,
+                    expectedAudioLanguages: expectedAudioLanguages
                 )
             case "failed", "error", "cancelled", "expired":
                 await discard(
@@ -3682,11 +3789,12 @@ private enum PlexOfflineDownloadQueue {
             ),
             URLQueryItem(
                 name: "X-Plex-Client-Profile-Extra",
-                value:
-                    "add-transcode-target(type=videoProfile&context=all&protocol=http&container=mp4&videoCodec=h264&audioCodec=aac&subtitleCodec=mov_text&replace=true)"
+                value: PlexOfflineTranscodeURLBuilder.downloadQueueProfile(
+                    includesAllAudioTracks: source.includesAllAudioTracks
+                )
             )
         ]
-        if let audioStreamID = value("audioStreamID") {
+        if !source.includesAllAudioTracks, let audioStreamID = value("audioStreamID") {
             queryItems.append(
                 URLQueryItem(name: "audioStreamID", value: audioStreamID)
             )

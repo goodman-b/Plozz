@@ -190,6 +190,9 @@ with that environment value; use a separate entrypoint-private package workspace
 and DerivedData for experimental builds. Normal Xcode launches without that
 environment remain native-only.
 
+Normal CI builds and hosted tests use this native-only graph as well. Their
+preparation does not build the experimental Java runtime or require its receipt.
+
 Release compilation rejects an experimental package graph, even if it was cached
 from Debug. The embed phase also rejects experimental Release, archive/install
 actions and release-channel builds. Native-only embedding does not require a
@@ -506,6 +509,114 @@ ETag or modification time. Missing, incomplete or ambiguous entries retain the
 ordinary opening-stat fallback. This avoids a redundant metadata round trip,
 not the final source-open/prepared-claim revalidation. Listings are never reused
 across Play requests, and detail preparation still does no sidecar discovery.
+
+External WebDAV playback opts into `MediaTransportExternalPlaybackFileSystem`;
+it never converts a network-file locator into a guessed URL in the app shell.
+The WebDAV adapter reuses ordinary opening metadata, representation/size checks,
+root-safe URL construction and a two-byte range probe without prefetching media.
+Under system TLS trust, anonymous URLs and configured password authentication
+can be handed off to supported players. The transport, not the app shell,
+adds percent-encoded credentials to an exact-origin URL for Native Player,
+Infuse or VLC. This follows the existing configured-HTTP LAN policy; it does not
+permit HTTPS downgrades. Custom templates cannot opt into password handoff.
+Infuse and Native Player accepted unreserved ASCII and raw `+&=!$'()*,;` password
+characters in physical playback-link probes, but rejected colon and escaped
+characters (including `@`, `/`, `?`, `#`, `%` and non-ASCII text). Keep legal
+punctuation raw inside the media URL and encode that entire URL once into the
+app-link query; overencoding the password also fails. Incompatible passwords
+cannot use this direct handoff; VLC retains
+standard escaped userinfo. Additional Basic-authentication probes confirmed
+that both tested players sent percent-escaped passwords literally instead of
+decoding them. Native Player's documented short link did not change that result;
+anonymous bootstrap redirects did not provide a working alternative in either
+player. A separate, explicitly admitted iOS file-streaming fallback is described
+below; there is no user-hosted relay requirement.
+If the delivered media still needs Digest-only policy, bearer/custom headers
+or a certificate pin, it cannot use direct handoff; those requirements are
+never dropped.
+Server-issued HTTPS delivery redirects retain isolated anonymous sessions;
+share credentials are never added to independently readable delivery URLs.
+Same-origin HTTPS delivery grants are also checked in an isolated anonymous
+session with a conditional two-byte read against the already-probed validator
+and size. This avoids unnecessarily exporting a reusable password, and lets
+header-authenticated or receiver-incompatible logins resolve independent media.
+Only a 401 permits falling back to an already-supported password contract;
+changed representations, redirects, authorization failures and other errors
+are not hidden behind that fallback.
+
+A pinned DAV origin can resolve a foreign HTTPS delivery grant: the original
+metadata and GET still enforce its pin, while the independent delivery uses
+system trust. Direct playback or anonymous redirects returning to the pinned
+origin cannot use direct handoff; no pin is removed to make a connection work.
+Media and matching SRT URLs are ephemeral and excluded from callback receipts
+and logs. Callback
+resource digests omit userinfo so a sanitized return URL still matches, while
+nonce, profile, account and credential-revision checks retain ownership.
+VLC also accepts plain FTP files and SRT sidecars through its stream action.
+The transport revalidates the selected file and bounded byte access, retains the
+configured port, and uses `//absolute/path` to avoid VLC resolving a different
+file under the login directory. Anonymous and URL-unreserved ASCII password
+credentials are enabled; FTPS endpoints, TLS requirements and pins never become
+plain FTP. See [the FTP contract](../Sources/MediaTransportFTP/README.md#external-playback).
+
+Other share transports need the app-owned handoff below; without it they keep
+their built-in path. Disc folders and conversion policies remain internal.
+An external player cannot renew an expired server-issued URL.
+
+### App-owned network-share file handoff
+
+On iOS/iPadOS 26, unsupported direct delivery can opt into a loopback-only
+file server backed by `MediaTransportNetworkFileResolver`. WebDAV, SMB, NFS,
+SFTP and FTP/FTPS all reuse their registered transport; no parallel authentication
+implementation is introduced. Source leases retain existing
+credential/trust revisions, representation validation and playback admission.
+SMB signing, SSH host keys/private keys and FTPS certificate policies stay with
+Plozz's transport rather than being dropped to satisfy a receiver's URL interface.
+The provider keeps the exact selected locator when direct delivery is
+unsupported; permission, authentication and changed-source errors are never
+converted into successful local delivery. SRT sidecars remain typed locators
+and stream without copying files into another app.
+
+The runtime waits for a started `BGContinuedProcessingTask`, not merely a
+successful submission. Submission uses the immediate-or-fail strategy, and
+admission has a five-second deadline. There is no background-audio workaround.
+Missing admission keeps playback internal; tvOS, older iOS and custom URL
+templates never opt into this capability.
+
+The endpoint binds only `127.0.0.1`, exposes opaque per-session resource paths,
+and accepts only GET/HEAD for the authorized file set. Exact Host and path
+matching, bounded request headers, eight concurrent connections, 30-second
+connection inactivity limits and single byte ranges prevent arbitrary upstream
+requests. Transport-aware reads are capped at 4 MiB per connection (32 MiB of
+application payload across eight connections, excluding transport/system
+buffers), then written in backpressured 256-KiB pieces. This avoids paying an
+upstream HTTP round trip for every socket write without buffering whole videos. Neither
+credentials nor the endpoint URL enter callback receipts or logs. Ordinary
+provider-supplied loopback URLs remain rejected: link construction accepts only
+the exact URLs belonging to the runtime's live session.
+
+Terminal source/authentication/trust failures revoke the whole capability rather
+than leaving an unusable source and execution grant alive. Client disconnects
+and transient timeouts do not terminate the playback session.
+Background expiration, new playback, account/profile changes, matched callbacks
+and foreground return revoke the endpoint and drain source cursors. Every
+chunk also checks current ownership and the execution grant. A session is
+bounded to 24 hours. System activity progress counts unique byte ranges served;
+seeking does not double-count, and bytes delivered never update watch state.
+Only the existing validated external-player callback can report playback
+progress.
+
+The OS can still expire admitted work, and the user can cancel it. This is not
+a full-film execution guarantee. Regression coverage exercises real loopback
+range/HEAD requests, short reads, cancellation, ownership and grant rejection;
+physical iOS external-player playback and long-duration system background
+admission remain unverified. The earlier Apple TV probes below validate direct
+password handoff only, not this new path.
+
+Physical Apple TV probes with disposable LAN HTTP fixtures verified Basic and
+Digest media retrieval and rendered video in Infuse 8.5.9 and Native Player
+2.0.1. Both fetched authenticated SRT sidecars; rendered SRT was observed in
+Infuse only. These probes are not HTTPS, certificate-pinning or iOS evidence.
 Other share transports retain opening-stat metadata; their directory-listing and
 file-stat representations need not carry the same precision or completeness.
 
@@ -739,19 +850,28 @@ headers when updating the vendored sources, and update sources, public headers,
 binary checksums, and bundled notices together.
 
 Plozz pins the playback-corrected
-[AetherEngine fork](https://github.com/brandomoore/AetherEngine/tree/55430e28df74ba11b36fea367ad22af0d685a68b)
-at commit `55430e28df74ba11b36fea367ad22af0d685a68b`, integrating upstream
-**7.53.1** (`0839aeee18dd0818c5c307a3c5ecba8ea3161b22`).
-Playback diagnostics show `AetherEngine v7.53.1`, read from the linked engine
+[AetherEngine fork](https://github.com/brandomoore/AetherEngine/tree/cc3cb49f4014a208f841bde8d1e0a5af0ff885e9)
+at commit `cc3cb49f4014a208f841bde8d1e0a5af0ff885e9`, integrating upstream
+**7.66.0** (`8e74bbb5cfde75287305c535c243c1ef9d96549c`).
+Playback diagnostics show `AetherEngine v7.66.0`, read from the linked engine
 rather than a duplicated version constant. The exact fork commit remains in
 attributions because the upstream version does not identify Plozz's patches.
 Native audio readback and subtitle selection use bounded off-main media-selection
 reads, so an unresponsive media service does not block the UI actor. Plozz treats
 AVFoundation's media-services reset as one fresh same-engine recovery, not a
 codec failure, and retains numeric audio-session failure evidence.
-The 7.51.0 integration includes 7.50.0's 24-bit PCM spatial-bed output with
-route-selected APAC for AirPlay. The 7.53.1 update advances FFmpegBuild to
-3.11.1; LibDovi 2.1.0 and LibTrueHD 3.1.0 remain unchanged.
+The 7.66.0 integration advances FFmpegBuild to 3.15.0 and LibDovi to 2.2.0.
+It adds upstream AAC/PCE handling, PCM decoder coverage, subtitle-seek corrections
+and bounded packet-cache waits. Our authored intervals, custom-title MEL
+inspection and cancellation, and native selection-reader fixes remain intact.
+Plozz keeps Now Playing ownership; the new engine-owned publishers stay off.
+Only the `DolbyVisionFelCurves` optional component is compiled. The fork explicitly
+defines it for Xcode, which does not forward the transitive SwiftPM trait define;
+integration tests assert the linked capability, not just manifest intent.
+Beta on-demand playback uses the profile's FEL conversion setting; previews,
+live playback, separate-audio sources, and interactive disc menus stay conservative.
+Unknown P7 retains HDR10 fallback. The native audio menu and disk-admission options retain
+their upstream opt-in defaults.
 It corrects the remote-HLS buffered frontier, uses measured producer throughput
 for short forward seeks, bounds bitmap subtitle retention after backward seeks,
 and supports HLS byte-range segments. The fork preserves AAC timing compensation,
@@ -857,8 +977,8 @@ LibDTSX **1.0.1**. Upstream 7.36.0 added another object-audio rendering path, co
 spatial speaker positions and a tvOS spatial-output activator for receivers that need it.
 It also includes live-replay recovery, software-video recovery after a screen lock,
 and the intervening 7.35.x playback fixes; these are upstream changes, not new
-Plozz-specific implementations. The current pin uses FFmpegBuild **3.11.1**
-and LibDovi **2.1.x**. LibTrueHD and LibDTSX are no longer linked in Plozz. It also includes
+Plozz-specific implementations. The current pin uses FFmpegBuild **3.15.0**
+and LibDovi **2.2.x**. LibTrueHD and LibDTSX are no longer linked in Plozz. It also includes
 single-connection spatial-audio probe safeguards and system-composited Dolby Vision
 held pictures. The fork retains the persistent HTTP body-reader isolation
 correction from its previous integration.
@@ -996,27 +1116,43 @@ search result are removed on tvOS and iOS/iPadOS. The adapter explicitly sets
 package trait is disabled. Legacy `dolbyVisionFELEnabled` values are ignored when
 loading or transferring profile settings and omitted on the next save.
 
-Plozz selects `DolbyVisionHandling.profile7BaseLayer` for on-demand playback,
-previews and engine-demuxed live playback. Both Profile 7 MEL and FEL play their
-authored HDR10 base, without P7-to-8.1 RPU conversion or enhancement-layer
-reconstruction. The engine classifies its demuxed source, including verified
-record corrections, rather than trusting possibly missing or inaccurate provider
-metadata. Its native remux uses plain `hvc1`, strips the Dolby configuration
+Debug and TestFlight builds offer **P7 FEL → P8.1 conversion**, on by default
+and persisted per profile in Playback settings. Supported on-demand playback uses
+`DolbyVisionHandling.profile7KnownLayers`: confirmed MEL converts as before;
+confirmed FEL converts with per-scene brightness curve folding, not full picture
+reconstruction. The approximation does not recover local detail, grain or full
+enhancement-layer precision, and can add startup/seek latency. Accuracy on a
+particular display is not implied by the setting.
+
+The TV Playback menu and mobile Video menu expose an override only for a
+confirmed FEL source. Turning it off reloads at the current position with the
+same play/pause intent and returns to HDR10, rather than merely disabling the
+fold. The override lasts for the current player session, not the next title or
+the profile default. Both platforms share the existing rendition-restart lifecycle.
+
+Production builds, previews, separate-audio sources, interactive disc menus and
+engine-demuxed live playback retain `profile7MELOnly`. Unclassified P7 always retains HDR10.
+The engine inspects a bounded number of actual source packets before output
+configuration and keeps those packets for playback; provider profile labels do
+not decide MEL versus FEL. Live P7 is not inspected and retains HDR10 fallback.
+
+For MEL conversion, the remux drops the EL, converts RPUs and signals Profile 8.1.
+For the P7 base-layer fallback, it uses plain `hvc1`, strips the Dolby configuration
 record, omits Dolby supplemental codecs, and requests base-layer display criteria.
-Source diagnostics can still identify Profile 7; output must not claim converted
-Profile 8.1. RPU/EL NALs remain unconverted and are ignored by the base-layer decoder.
+Source diagnostics can still identify P7; conversion telemetry identifies P8.1
+only when that stream is actually served. Read/input-limit failures during the
+inspection abort preparation rather than reuse an interrupted parser.
 
-This intentionally gives up Profile 7 dynamic metadata, including MEL, and FEL
-residual detail. Supported single-layer Dolby Vision profiles, ordinary audio
-paths, and native E-AC-3/JOC stream-copy remain unchanged. Software still-image
-reshaping remains disabled. Direct remote HLS handed to AVPlayer, server
-transcoding, and external players own their delivered format; this policy does not
-rewrite those streams or infer their format from original-file metadata.
+Supported single-layer Dolby Vision profiles, ordinary audio paths, and native
+E-AC-3/JOC stream-copy remain unchanged. FEL reconstruction and all optional
+height-audio/still-image reshaping components remain excluded. Direct remote HLS
+handed to AVPlayer, server transcoding, and external players own their delivered
+format; this policy does not rewrite those streams or infer their format from
+original-file metadata.
 
-Removing the optional reconstruction path does not establish licensing clearance
-for every remaining video or audio feature. Avoiding P7 conversion reduces custom
-processing; it does not remove all Dolby-related code from the distributed engine
-or establish patent permission. Open-source licensing and Apple API availability
+Keeping FEL reconstruction disabled does not establish licensing clearance
+for every remaining video or audio feature. The engine still includes Dolby-related
+code, including MEL metadata conversion. Open-source licensing and Apple API availability
 are not a substitute for reviewing the actual shipped implementation and applicable
 third-party rights.
 
@@ -1195,6 +1331,17 @@ do not establish a supported remote-input path.
 
 Native-only capability profiles remain separate. Server conversion profiles,
 quality budgets, selected versions/tracks and session maintenance are unchanged.
+
+Automatic version selection uses that same Plozzigen input list rather than the
+native passthrough heuristic. Single-server and merged-source recommendations
+share the assessment; explicit and remembered selections still take priority.
+The existing resolution/bitrate weights and equal HDR-format bonus remain.
+Only a usable HDR hint earns the bonus, with Profile 7 treated as HDR10 under
+the current base-layer policy. OS-reported HDR playback ineligibility suppresses
+the bonus without rejecting an otherwise supported input. HDR eligibility is
+not proof of a particular Dolby Vision/HDR10+ output mode. This does not probe
+every candidate, promise real-time software decoding, add audio-quality bonuses,
+or change the largest-file-first picker order.
 
 ## Deliberate native exceptions
 

@@ -62,6 +62,7 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
         let importedFiles: [LiveTVSyncFileRevision?]
     }
     #if DEBUG
+    private(set) var guideDocumentDecodesForTesting = 0
     private var guideImportProgressForTesting: (@Sendable (Int) throws -> Void)?
 
     func setGuideImportProgressForTesting(_ observer: (@Sendable (Int) throws -> Void)?) {
@@ -77,6 +78,9 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
         let mappingsDigest: String
         let preferredLanguage: String?
     }
+
+    private var openedGuide: (binding: String?, payload: Data, document: GuideDocument)?
+    private var openedSpellings: [String: [String]]?
 
     private struct GuideDocument: Codable {
         let guide: LiveTVGuideImport?
@@ -676,7 +680,7 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
             let summary = LiveTVGuideImport(
                 programs: [], matchedChannelCount: parsed.matchedChannelCount, guideChannelCount: parsed.guideChannelCount,
                 programCount: insertedProgramCount, coverageStart: parsed.coverageStart, coverageEnd: parsed.coverageEnd,
-                matches: parsed.matches, guideChannels: parsed.guideChannels
+                matches: parsed.matches, guideChannels: parsed.guideChannels, sourceProgramCount: parsed.sourceProgramCount
             )
             result = summary
             for (id, names) in summary.guideChannels where indexState == nil {
@@ -684,7 +688,7 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
                 try db.execute(
                     "INSERT INTO guide_channels(source,id,name,display_id,payload) VALUES(?,?,?,?,?)",
                     [.text(sourceID), .text(LiveTVChannelIdentity(key: try key()).fingerprint(id)),
-                     .text(names.first ?? ""), .text(option.displayID ?? ""), .blob(try seal(option, binding: binding))]
+                     .text(names.joined(separator: "\n")), .text(option.displayID ?? ""), .blob(try seal(option, binding: binding))]
                 )
             }
             try db.execute(
@@ -705,7 +709,15 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
 
     func guideIndexState(sourceID: String, sourceURL: URL) throws -> LiveTVGuideIndexState? {
         let db = try database()
-        return try guideIndexDocument(sourceID: sourceID, sourceURL: sourceURL, database: db)?.index
+        guard let document = try guideIndexDocument(sourceID: sourceID, sourceURL: sourceURL, database: db),
+              var state = document.index else { return nil }
+        // Rebuild old zero-row indexes once to establish the source count; a
+        // digest-only revalidation would leave that distinction unknown.
+        if let guide = document.guide, guide.sourceProgramCount == nil, guide.programCount == 0 { return nil }
+        if document.guide?.sourceProgramCount == 0, let checkedAt = state.cacheMetadata?.checkedAt {
+            state.expiresAt = min(state.expiresAt, checkedAt.addingTimeInterval(XMLTVGuideCacheMetadata.emptyResultMaximumAge))
+        }
+        return state
     }
 
     private func guideIndexDocument(
@@ -716,7 +728,19 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
               let row = try db.rows(
                 "SELECT payload FROM documents WHERE kind='guide' AND source=?", [.text(sourceID)]
               ).first else { return nil }
-        return try open(row.blob(0), as: GuideDocument.self, binding: binding)
+        // Every guide lookup reads this document. Unsealing and decoding thousands of
+        // stations costs far more than the lookup, so an unchanged payload is decoded once.
+        let payload = try row.blob(0)
+        if let openedGuide, openedGuide.binding == binding, openedGuide.payload == payload {
+            return openedGuide.document
+        }
+        let document = try open(payload, as: GuideDocument.self, binding: binding)
+        #if DEBUG
+        guideDocumentDecodesForTesting += 1
+        #endif
+        openedGuide = (binding, payload, document)
+        openedSpellings = nil
+        return document
     }
 
     func revalidateGuideIndex(
@@ -737,11 +761,12 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
 
     func indexedAccountPrograms(
         sourceID: String, sourceURL: URL, generation: UUID,
-        channels: [LiveTVPrototypeChannel], range: DateInterval
+        channels: [LiveTVPrototypeChannel], range: DateInterval, trustsGuideIDs: Bool = false
     ) throws -> [LiveTVPrototypeProgram] {
         guard channels.count <= 2_000, range.duration > 0, range.duration <= 172_800 else {
             throw LiveTVCacheError.invalidRange
         }
+        if channels.isEmpty { return [] }
         let db = try database()
         return try db.readTransaction {
             guard let document = try guideIndexDocument(sourceID: sourceID, sourceURL: sourceURL, database: db),
@@ -749,13 +774,26 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
                   state.contains(range), let guide = document.guide else {
                 throw LiveTVGuideIndexError.generationChanged
             }
-            let matches = LiveTVGuideMatcher(provider: LiveTVGuideSource.provider(for: sourceURL))
-                .match(channels: channels, guideChannels: guide.guideChannels)
+            if trustsGuideIDs, openedSpellings == nil {
+                openedSpellings = LiveTVGuideMatcher.spellings(of: guide.guideChannels)
+            }
+            let matches = LiveTVGuideMatcher(provider: LiveTVGuideSource.provider(for: sourceURL)).match(
+                channels: channels, guideChannels: guide.guideChannels, trustsGuideIDs: trustsGuideIDs,
+                spellings: trustsGuideIDs ? openedSpellings : nil
+            )
             let binding = try sourceBinding(kind: "guide", sourceID: sourceID, url: sourceURL)
             var result: [LiveTVPrototypeProgram] = []
             var textBytes = 0
-            for guideID in matches.keys.sorted() {
+            // With trusted IDs a channel may be offered several spellings of its station.
+            // Its own spelling is read first, and a later one is used only if no earlier
+            // one had listings, so the same programme is never returned twice.
+            let reads = LiveTVGuideMatcher.stationReads(matches: matches, trustsGuideIDs: trustsGuideIDs)
+            var served = Set<String>()
+            for (guideID, channels) in reads {
                 try Task.checkCancellation()
+                let readers = channels.filter { !served.contains($0.id) }
+                if readers.isEmpty { continue }
+                var found = false
                 var offset = 0
                 while true {
                     let rows = try db.rows(
@@ -765,7 +803,8 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
                     )
                     for row in rows {
                         let program = try open(row.blob(0), as: LiveTVPrototypeProgram.self, binding: binding)
-                        for channel in matches[guideID] ?? [] {
+                        found = true
+                        for channel in readers {
                             textBytes += program.title.utf8.count + program.subtitle.utf8.count
                                 + (program.details?.retainedTextBytes ?? 0)
                             guard result.count < LiveTVXMLTVParser.maximumRetainedPrograms,
@@ -785,6 +824,7 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
                     if rows.count < 512 { break }
                     offset += rows.count
                 }
+                if found, trustsGuideIDs { served.formUnion(readers.map(\.id)) }
             }
             return result.sorted { ($0.start, $0.id) < ($1.start, $1.id) }
         }
@@ -984,7 +1024,7 @@ public actor LiveTVIndexedCache: ApplicationStorageParticipant {
         let entries = overrides.keys.sorted().map { [$0, overrides[$0] ?? ""] }
         let data = try catalogEncoder.encode(entries)
         return GuideSettings(
-            version: 2, provider: provider?.rawValue, lookbackDays: lookbackDays, lookaheadDays: lookaheadDays,
+            version: LiveTVXMLTVParser.cacheVersion, provider: provider?.rawValue, lookbackDays: lookbackDays, lookaheadDays: lookaheadDays,
             mappingsDigest: LiveTVChannelIdentity(key: try identityKey()).fingerprint(
                 String(decoding: data, as: UTF8.self)
             ),

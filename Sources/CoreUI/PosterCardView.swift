@@ -24,14 +24,13 @@ public struct PosterCardView: View {
     private let textlessBackdropStore: TextlessBackdropStore
     private let enablesAsyncArtworkFallback: Bool
     private let reservesSubtitleSpace: Bool
+    /// Caller-owned caption context without changing the navigable media item's metadata.
+    private let captionSubtitle: LocalizedStringResource?
     /// Optional caller-owned context cue. It occupies the artwork's top-leading
     /// slot, leaving watch state (top-trailing) and progress (bottom) untouched.
     ///
-    /// This is app copy, not media metadata, so it is a `LocalizedStringResource`
-    /// rather than a `String` — a plain `String` reaching `Text` renders verbatim
-    /// and would silently stay English. Media titles on this same card stay
-    /// `String` on purpose; they are provider content and must not be translated.
-    private let statusCueText: LocalizedStringResource?
+    /// Callers distinguish localized copy from preformatted content with `Text`.
+    private let statusCueText: Text?
     /// When `true`, selecting the card starts playback immediately (Continue
     /// Watching, landscape library rows) rather than opening a detail page. Such
     /// cards show the resume chip — play glyph + progress bar + time-remaining —
@@ -49,6 +48,7 @@ public struct PosterCardView: View {
     private let showsActionsMenu: Bool
     /// Keeps a Watchlist card visibly in flight while its durable row catches up.
     private let isPendingRemoval: Bool
+    private let captionHorizontalInset: CGFloat?
     private let focusRequest: UUID?
     private let onFocusRequestHandled: (() -> Void)?
     private let action: () -> Void
@@ -120,12 +120,14 @@ public struct PosterCardView: View {
         showsSeriesArtwork: Bool = false,
         enablesAsyncArtworkFallback: Bool = true,
         reservesSubtitleSpace: Bool = true,
-        statusCue: LocalizedStringResource? = nil,
+        captionSubtitle: LocalizedStringResource? = nil,
+        statusCue: Text? = nil,
         playsOnSelect: Bool = false,
         showsResumeChip: Bool = false,
         downloadState: MediaDownloadBadgeState? = nil,
         showsActionsMenu: Bool = false,
         isPendingRemoval: Bool = false,
+        captionHorizontalInset: CGFloat? = nil,
         focusRequest: UUID? = nil,
         onFocusRequestHandled: (() -> Void)? = nil,
         textlessBackdropStore: TextlessBackdropStore? = nil,
@@ -139,12 +141,14 @@ public struct PosterCardView: View {
         self.textlessBackdropStore = textlessBackdropStore ?? .shared
         self.enablesAsyncArtworkFallback = enablesAsyncArtworkFallback && artworkPolicy.allowsOnlineFallback
         self.reservesSubtitleSpace = reservesSubtitleSpace
+        self.captionSubtitle = captionSubtitle
         self.statusCueText = statusCue
         self.playsOnSelect = playsOnSelect
         self.showsResumeChipOverride = showsResumeChip
         self.downloadState = downloadState
         self.showsActionsMenu = showsActionsMenu
         self.isPendingRemoval = isPendingRemoval
+        self.captionHorizontalInset = captionHorizontalInset
         self.focusRequest = focusRequest
         self.onFocusRequestHandled = onFocusRequestHandled
         self.action = action
@@ -334,7 +338,7 @@ public struct PosterCardView: View {
         if showsSeriesArtwork {
             return style == .poster ? .extendedPortrait(blurredReflection: !reduceTransparency) : .extended
         }
-        if PosterCardPresentation.preservesContainerArtwork(for: item.kind) { return .fitted }
+        if PosterCardPresentation.fitsContainerArtwork(for: item.kind) { return .fitted }
         return hideThumbnail && !nativeUsesProtectedArtwork ? .blurred : .original
     }
 
@@ -494,7 +498,7 @@ public struct PosterCardView: View {
                 #endif
 
             if !captionsHidden {
-                captionBlock(inset: metrics.posterCaptionHorizontalInset, spacing: 2)
+                captionBlock(inset: captionHorizontalInset ?? metrics.posterCaptionHorizontalInset, spacing: 2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.bottom, metrics.posterCaptionInset)
             }
@@ -729,6 +733,7 @@ public struct PosterCardView: View {
     /// the framed caption uses for this shape, so text lines up with the rounded
     /// artwork edge instead of butting against it.
     private var borderlessCaptionInset: CGFloat {
+        if let captionHorizontalInset { return captionHorizontalInset }
         switch style {
         case .poster: return metrics.posterCaptionHorizontalInset
         case .landscape: return metrics.landscapeCaptionHorizontalInset
@@ -834,8 +839,12 @@ public struct PosterCardView: View {
     /// Secondary line — subtitle facts plus card runtime/remaining when available.
     /// The runtime/"… left" is dropped when the resume chip is shown, since the
     /// chip already carries the time on the artwork (no need to repeat it here).
-    private var subtitleText: String? {  // l10n:content — provider subtitle and preformatted runtime
-        item.posterCaptionSubtitle(showsRuntime: !showsResumeChip)
+    private var subtitleText: String? {
+        if var captionSubtitle {
+            captionSubtitle.locale = locale
+            return String(localized: captionSubtitle) // l10n:content — native caption/accessibility boundary, resolved with the current environment locale
+        }
+        return item.posterCaptionSubtitle(showsRuntime: !showsResumeChip)
     }
 
     // MARK: Resume chip
@@ -1030,7 +1039,7 @@ public struct PosterCardView: View {
             pinIdentity: artworkPolicy.pinIdentity(for: item),
             content: { image in
                 image.resizable()
-                    .aspectRatio(contentMode: PosterCardPresentation.preservesContainerArtwork(for: item.kind) ? .fit : .fill)
+                    .aspectRatio(contentMode: PosterCardPresentation.fitsContainerArtwork(for: item.kind) ? .fit : .fill)
                     .blur(radius: hideThumbnail && spoilerSettings.mode == .blur ? 28 : 0)
                     .overlay(alignment: .topTrailing) {
                         if PosterCardPresentation.usesFolderArtwork(for: item.kind) {
@@ -1371,7 +1380,7 @@ public struct PosterCardView: View {
     @ViewBuilder
     private func statusCue(inset: CGFloat) -> some View {
         if let statusCueText {
-            Text(statusCueText)
+            statusCueText
                 .font(.system(size: metrics.cardStatusCueFontSize, weight: .semibold))
                 .foregroundStyle(.white)
                 .lineLimit(1)
@@ -1379,7 +1388,7 @@ public struct PosterCardView: View {
                 .padding(.vertical, metrics.cardStatusCueVerticalPadding)
                 .background(.black.opacity(0.72), in: Capsule(style: .continuous))
                 .padding(inset)
-                .accessibilityLabel(Text(statusCueText))
+                .accessibilityLabel(statusCueText)
         }
     }
 
@@ -1472,6 +1481,11 @@ struct ContinueWatchingSeriesLogo: View {
 /// SwiftUI. Folders retain the shared poster footprint/focus mechanics but never
 /// look like playable, unwatched media.
 enum PosterCardPresentation {
+    static func fitsContainerArtwork(for kind: MediaItemKind) -> Bool {
+        kind == .playlist || kind == .folder
+    }
+
+    /// Accept custom container covers regardless of aspect ratio, even when cropped to fill.
     static func preservesContainerArtwork(for kind: MediaItemKind) -> Bool {
         kind == .collection || kind == .playlist || kind == .folder
     }

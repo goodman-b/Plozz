@@ -11,6 +11,60 @@ import UIKit
 
 @MainActor
 final class StreamingPlaybackTests: XCTestCase {
+    func testFELOverrideEnablesOrdinaryPlaybackFromProfileOffAndDoesNotReviveAfterStop() async {
+        let engine = QualityEngine()
+        engine.canChangeDolbyVisionFELConversion = true
+        let model = PlayerViewModel(
+            provider: QualityPlaybackProvider(), itemID: "movie",
+            playbackSettings: .init(dolbyVisionFELConversion: false),
+            engineFactory: .init(makeNative: { _ in engine })
+        )
+        await model.load()
+        XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, false)
+        engine.currentTime = 125
+        model.setDolbyVisionFELConversion(true)
+        await wait { engine.positions.count == 2 && model.phase == .ready }
+        XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, true)
+        XCTAssertEqual(engine.positions.last, 125)
+        model.setDolbyVisionFELConversion(false)
+        await model.stop()
+        XCTAssertEqual(engine.positions.count, 2)
+    }
+
+    func testFELOverridePreservesPositionAndIntentWithoutChangingProfileDefault() async {
+        for paused in [false, true] {
+            let (model, engine, _) = make()
+            engine.canChangeDolbyVisionFELConversion = true
+            await model.load()
+            XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, true)
+            engine.currentTime = 125
+            model.setPaused(paused)
+            model.setDolbyVisionFELConversion(false)
+            await wait { engine.positions.count == 2 && model.phase == .ready }
+            XCTAssertEqual(engine.positions.last, 125)
+            XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, false)
+            XCTAssertEqual(engine.isPaused, paused)
+            XCTAssertEqual(model.controls.intendsPause, paused)
+            model.setDolbyVisionFELConversion(true)
+            await wait { engine.positions.count == 3 && model.phase == .ready }
+            XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, true)
+            XCTAssertEqual(engine.isPaused, paused)
+            await model.stop()
+            let (next, nextEngine, _) = make()
+            await next.load()
+            XCTAssertEqual(nextEngine.loadedRequests.last?.dolbyVisionFELConversion, true)
+            await next.stop()
+        }
+    }
+
+    func testFELOverrideIsUnavailableForUnrelatedPlayback() async {
+        let (model, engine, _) = make()
+        await model.load()
+        model.setDolbyVisionFELConversion(false)
+        XCTAssertEqual(engine.positions.count, 1)
+        XCTAssertEqual(engine.loadedRequests.last?.dolbyVisionFELConversion, true)
+        await model.stop()
+    }
     func testForceTranscodingHintRequiresAFailedConvertedStream() async {
         for enabled in [false, true] {
             for converted in [false, true] {
@@ -1576,6 +1630,48 @@ final class StreamingPlaybackTests: XCTestCase {
         await model.stop()
     }
 
+    func testStreamingAudioSelectionHonorsOrderedLanguagesAndManualChoice() {
+        let english = MediaTrack(id: 3, kind: .audio, displayTitle: "English", language: "eng", isDefault: true)
+        let japanese = MediaTrack(id: 4, kind: .audio, displayTitle: "Japanese", language: "jpn")
+        let tracks = [english, japanese]
+        var options = StreamingPlaybackOptions(quality: .hd720)
+        options.preferredAudioLanguages = ["fr", "ja", "en"]
+        XCTAssertEqual(options.selectedAudio(in: tracks)?.id, japanese.id)
+        options.audioTrack = english
+        XCTAssertEqual(options.selectedAudio(in: tracks)?.id, english.id)
+        options.audioTrack = nil
+        options.preferredAudioLanguages = ["fr"]
+        XCTAssertEqual(options.selectedAudio(in: tracks)?.id, english.id)
+    }
+
+    func testRememberedMovieAudioReachesTheServerBeforeRenditionSelection() async throws {
+        for includesBrowserItem in [true, false] {
+            let suite = "StreamingTitleMemory-\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let store = SeriesTrackPreferenceStore(defaults: defaults)
+            let item = MediaItem(id: "movie", title: "Movie", kind: .movie)
+            let memory = SeriesTrackMemory(store: store, accountFallbackID: "test",
+                                           rememberAudio: false, rememberSubtitle: false)
+            memory.recordAudioSelection(language: "jpn", for: item)
+            let provider = QualityPlaybackProvider()
+            let engine = QualityEngine()
+            let model = PlayerViewModel(
+                provider: provider, itemID: item.id, episodeItem: includesBrowserItem ? item : nil,
+                playbackSettings: .init(rememberAudioTrackPerSeries: false),
+                streamingOptions: .init(quality: .hd720),
+                seriesTrackStore: store, seriesAccountFallbackID: "test",
+                engineFactory: .init(makeNative: { _ in engine })
+            )
+            await model.load()
+            let calls = await provider.calls
+            XCTAssertEqual(model.phase, .ready)
+            XCTAssertEqual(calls.first?.options.preferredAudioLanguages, ["ja"])
+            XCTAssertEqual(calls.first?.options.selectedAudio(in: engine.audioTracks)?.id, 4)
+            await model.stop()
+        }
+    }
+
     func testRenditionSwitchRetainsManualAudioAndSubtitleSelections() async {
         let (model, engine, provider) = make(options: .init(quality: .original))
         await model.load()
@@ -1955,6 +2051,7 @@ private final class QualityScrubStillExtractor: ScrubStillExtracting {
 
 @MainActor
 private final class QualityEngine: VideoEngine {
+    var canChangeDolbyVisionFELConversion = false
     var nowPlayingPlayer: AVPlayer?
     var didLoad: (() -> Void)?
     var suppressActiveAudioID = false

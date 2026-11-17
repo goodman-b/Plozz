@@ -42,6 +42,7 @@ let package = Package(
         .library(name: "FeatureDiscovery", targets: ["FeatureDiscovery"]),
         .library(name: "ProviderJellyfin", targets: ["ProviderJellyfin"]),
         .library(name: "ProviderSilo", targets: ["ProviderSilo"]),
+        .library(name: "ProviderSubsonic", targets: ["ProviderSubsonic"]),
         .library(name: "ProviderIPTV", targets: ["ProviderIPTV"]),
         .library(name: "ProviderPlex", targets: ["ProviderPlex"]),
         .library(name: "ProviderShare", targets: ["ProviderShare"]),
@@ -90,8 +91,8 @@ let package = Package(
         // Powers the native HLS-fMP4 remux path for MKV → DoVi + Atmos + seek.
         // See docs/playback-engines.md for integration and fork corrections.
         //
-        // Pinned to the playback-corrected fork integrating upstream 7.53.1
-        // (0839aeee18dd0818c5c307a3c5ecba8ea3161b22). This retains Plozz's
+        // Pinned to the playback-corrected fork integrating upstream 7.66.0
+        // (8e74bbb5cfde75287305c535c243c1ef9d96549c). This retains Plozz's
         // AAC timing, ASS duration, dynamic linkage, frame/cache APIs and privacy manifest,
         // plus bounded position-aware compressed-source preparation and older-runtime cleanup.
         //
@@ -246,7 +247,7 @@ let package = Package(
         // bridge; the engine's legacy SMB URL product is not linked.
         // 7.48.0 adds VP9 hardware decoding where available, AV1 Dolby Vision,
         // software-path spatial audio, and bounded MPEG-DASH VOD support.
-        // FFmpegBuild 3.11.1 is owned by the engine.
+        // FFmpegBuild 3.15.0 is owned by the engine.
         // New host-controlled Now Playing and background retention remain opt-in.
         // 7.51.0 includes route-selected lossless PCM spatial beds from 7.50.0.
         // The fork retains Plozz's timing, subtitle, diagnostics and linkage fixes.
@@ -255,12 +256,16 @@ let package = Package(
         // availability. FFmpegBuild 3.11.1 adds AV1 forward-keyframe detection.
         // Audio shaping and low-resolution upscaling remain opt-in and disabled.
         // Resume preroll backfill no longer opens a false native-scrub landing watch.
+        // 7.66.0 includes AAC/PCE, subtitle-seek and packet-wait fixes.
+        // FEL curve folding is available for beta on-demand playback; engine-owned Now Playing stays off.
         // Native media-selection IPC uses bounded off-main readers during media-service stalls.
-        // Profile 7-only HDR10 fallback preserves other Dolby Vision routes.
+        // Selective P7 conversion requires positive MEL/FEL evidence; unknown P7 keeps HDR10.
         .package(
-            path: "../plozz-engine/AetherEngine",
-// personal build: re-enable object-audio height rendering (see branch notes)
-            ),
+            url: "https://github.com/brandomoore/AetherEngine",
+            revision: "055860a0accaaafa1852d1a65c4f7f505cb7e6ab",
+            // personal branch: re-enable object-audio height rendering on top of upstream traits
+            traits: ["DolbyVisionFelCurves", "TrueHDObjectAudio", "DTSXObjectAudio"]
+        ),
         // NOTE: FFmpegBuild (FFmpeg n8.1.x media libraries) and LibDovi (Dolby Vision
         // RPU parser) are transitive dependencies — AetherEngine declares and
         // consumes them. Object-audio conversion traits are intentionally disabled.
@@ -365,6 +370,10 @@ let package = Package(
             dependencies: ["CoreModels", "CoreNetworking"]
         ),
         .target(
+            name: "ProviderSubsonic",
+            dependencies: ["CoreModels", "CoreNetworking"]
+        ),
+        .target(
             name: "ProviderIPTV",
             dependencies: ["CoreModels", "CoreNetworking"],
             linkerSettings: [.linkedLibrary("sqlite3")]
@@ -441,11 +450,11 @@ let package = Package(
         ),
         .target(
             name: "FeatureAuthCore",
-            dependencies: ["CoreModels", "CoreNetworking", "CoreSecureStore", "ProviderJellyfin", "ProviderPlex", "ProviderSilo", "ProviderIPTV"]
+            dependencies: ["CoreModels", "CoreNetworking", "CoreSecureStore", "ProviderJellyfin", "ProviderPlex", "ProviderSilo", "ProviderIPTV", "ProviderSubsonic"]
         ),
         .target(
             name: "FeatureAuth",
-            dependencies: ["CoreModels", "CoreUI", "FeatureAuthCore", "ProviderPlex", "ProviderSilo"]
+            dependencies: ["CoreModels", "CoreUI", "FeatureAuthCore", "ProviderPlex", "ProviderSilo", "ProviderSubsonic"]
         ),
         .target(
             name: "FeatureHomeCore",
@@ -516,7 +525,7 @@ let package = Package(
         // Config and encrypted credential pairing, with secret-safe diagnostics.
         .target(
             name: "FeatureSyncSetup",
-            dependencies: ["CoreModels", "CoreNetworking"]
+            dependencies: ["CoreModels", "CoreNetworking", "SeerService"]
         ),
 
         // Non-secret config auto-sync over CloudKit (CKSyncEngine, private DB).
@@ -537,7 +546,8 @@ let package = Package(
         // it stays decoupled from the video feature modules.
         .target(
             name: "FeatureMusic",
-            dependencies: ["CoreModels", "CoreUI", "MetadataKit", "CoreNetworking"]
+            dependencies: ["CoreModels", "CoreUI", "MetadataKit", "CoreNetworking"],
+            resources: [.process("iOS/Resources"), .copy("iOS/Mozz-NOTICE.txt")]
         ),
 
         // MARK: Top Shelf (shared with the tvOS Top Shelf extension)
@@ -851,6 +861,7 @@ let package = Package(
                 "MediaTransportWebDAV",
                 "ProviderJellyfin",
                 "ProviderSilo",
+                "ProviderSubsonic",
                 "ProviderPlex",
                 "ProviderIPTV",
                 "ProviderShare",
@@ -931,6 +942,7 @@ let package = Package(
         .target(
             name: "AppShelliOS",
             dependencies: [
+                "FeatureMusic",
                 "FeatureShareOnboarding",
                 "AppRuntime",
                 "CoreModels",
@@ -992,6 +1004,11 @@ let package = Package(
         .target(
             name: "TestSupportPerformance",
             path: "Tests/TestSupportPerformance"
+        ),
+        .target(
+            name: "TestSupportContentRefresh",
+            dependencies: ["FeatureHomeCore"],
+            path: "Tests/TestSupportContentRefresh"
         ),
 
         // MARK: Tests (pure logic, no UI required)
@@ -1056,6 +1073,10 @@ let package = Package(
             dependencies: ["ProviderSilo", "CoreModels", "CoreNetworking", "TestSupportPerformance"]
         ),
         .testTarget(
+            name: "ProviderSubsonicTests",
+            dependencies: ["ProviderSubsonic", "CoreModels", "CoreNetworking"]
+        ),
+        .testTarget(
             name: "ProviderIPTVTests",
             dependencies: ["ProviderIPTV", "CoreModels", "CoreNetworking", "FeatureLiveTVCore", "TestSupportPerformance"]
         ),
@@ -1102,13 +1123,14 @@ let package = Package(
                 "FeatureHomeCore",
                 "HeroUI",
                 "CoreModels",
-                "RatingsService"
+                "RatingsService",
+                "TestSupportContentRefresh"
             ]
         ),
         .testTarget(
             name: "FeatureHomeCoreTests",
             dependencies: ["FeatureHomeCore", "CoreModels", "MetadataKit", "ProviderJellyfin",
-                           "CoreNetworking", "TestSupportPerformance"]
+                           "CoreNetworking", "TestSupportPerformance", "TestSupportContentRefresh"]
         ),
         .testTarget(
             name: "FeatureSearchCoreTests",

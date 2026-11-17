@@ -19,6 +19,31 @@ import FeatureSettings
 import FeatureSyncCloud
 import MetadataKit
 
+@MainActor
+private struct RuntimeHomeContentSnapshot: HomeContentSnapshotProviding {
+    let appState: AppState
+    let models: LazyViewState<HomeViewModel>
+
+    var recommendationScope: HomeRecommendationScope? {
+        let key = HomeRuntimeScope.homeScopeKey(
+            profileID: appState.profilesModel.activeProfileID,
+            accounts: appState.accountsProviders.homeAccounts.map(\.account),
+            plexIdentityGeneration: appState.plexHomeUsers.plexIdentityGeneration
+        )
+        return models.existingValue(forKey: key)?.recommendationScope
+    }
+
+    func contentSnapshot(for kind: HomeGlobalRow, visibility: HomeLibraryVisibility) throws -> [MediaItem] {
+        let key = HomeRuntimeScope.homeScopeKey(
+            profileID: appState.profilesModel.activeProfileID,
+            accounts: appState.accountsProviders.homeAccounts.map(\.account),
+            plexIdentityGeneration: appState.plexHomeUsers.plexIdentityGeneration
+        )
+        guard let model = models.existingValue(forKey: key) else { throw AppError.notFound }
+        return try model.contentSnapshot(for: kind, visibility: visibility)
+    }
+}
+
 /// Composes the identity that scopes the Home tab subtree — and the retained
 /// ``HomeHeroRuntimeState`` it owns — to the active profile and Plex Home-user
 /// generation. A change to either forces SwiftUI to tear down and rebuild
@@ -73,6 +98,7 @@ public struct RootView: View {
     @State private var rootPresentation = RootPresentationCoordinator()
     @State private var startupNotesPrepared = false
     @State private var startupLogoIntroCompleted = false
+    @State private var settingsCoverPresented = false
     @State private var deferredStartupURL: URL?
     @State private var presentedSetupOffer: SyncPairingRendezvous?
     /// Home's view model, owned here because this is the highest view whose
@@ -80,6 +106,7 @@ public struct RootView: View {
     /// tab tree so a `TabView` re-host cannot discard it mid-load; see
     /// ``LazyViewState`` for the measurements that forced this.
     @State private var homeViewModelBox = LazyViewState<HomeViewModel>()
+    @State private var contentRefreshCoordinator = ContentRefreshCoordinator(profile: .tvOS)
     /// The device appearance, mirrored into state by `ColorSchemeMirror` rather
     /// than read from the environment here.
     ///
@@ -524,15 +551,26 @@ public struct RootView: View {
 
     public var body: some View {
         Group {
-            if needsDiagnosticConsent {
+            if needsDiagnosticConsent || appState.syncSetup.needsOnboardingChoice
+                || appState.initialSetupRestoration.phase != .hidden {
                 Group {
                     if !startupLogoIntroCompleted {
                         launchView
                             .background { AppBackground(palette: resolvedPalette) }
-                    } else {
+                    } else if needsDiagnosticConsent {
                         CrashReportingConsentView { enabled in
                             appState.crashReportingModel.isEnabled = enabled
                         }
+                    } else if appState.syncSetup.needsOnboardingChoice {
+                        ICloudOnboardingView(onChoice: appState.completeICloudOnboarding)
+                    } else {
+                        ICloudRestorationView(
+                            phase: appState.initialSetupRestoration.phase,
+                            activity: appState.initialSetupRestoration.activity
+                                ?? (appState.providerCredentialSync.isRestoringSignIn ? .signingInToServers : nil),
+                            onRetry: appState.restoreInitialICloudSetup,
+                            onSetUpManually: appState.setUpManuallyAfterICloudRestore
+                        )
                     }
                 }
                 .environment(\.themePalette, resolvedPalette)
@@ -550,8 +588,31 @@ public struct RootView: View {
                     }
             }
         }
+        .seerRequestDestination(appState.seerService)
+        .signInSyncPermission(
+            appState.providerCredentialSync.publicationPermission,
+            canPresent: startupPresentationReady && rootPresentation.active == nil
+                && presentationRequests.isEmpty && appState.isActiveProfileAuthorized
+                && !settingsCoverPresented && !appState.profileFlow.managementRequiresParentalPIN,
+            sourceNames: { $0.accounts.map { "\($0.server.name) — \($0.userName)" }.joined(separator: "\n") }
+        ) { request, allow in
+            if appState.providerCredentialSync.resolvePublicationPermission(request, allow: allow) {
+                appState.scheduleCloudPublish()
+            } else {
+                appState.transientStatusPresenter.present(
+                    icon: "exclamationmark.triangle", text: "Couldn't save sign-in sync permission.")
+            }
+        }
+        .onChange(
+            of: appState.isActiveProfileAuthorized && !appState.profilesModel.activeProfile.needsSetup
+                && appState.initialSetupRestoration.phase == .hidden,
+            initial: true
+        ) { _, ready in
+            if ready { appState.continueManualICloudSetupIfReady() }
+        }
         .onOpenURL { url in
-            if needsDiagnosticConsent || showsStartupLogo {
+            if needsDiagnosticConsent || appState.syncSetup.needsOnboardingChoice
+                || appState.initialSetupRestoration.phase != .hidden || showsStartupLogo {
                 deferredStartupURL = url
             } else {
                 appState.handle(url: url)
@@ -739,6 +800,8 @@ public struct RootView: View {
                             pendingPlay: appState.pendingPlay,
                             screenshotDirector: appState.screenshotDirector
                         ),
+                        upcomingAccounts: { appState.upcomingAccounts },
+                        upcomingWatchlist: { appState.resolvedUniversalWatchlistItems(candidates: []) },
                         isAccountIncludedInActiveProfile: { appState.profileFlow.isAccountIncludedInActiveProfile($0) },
                         onSetAccountIncluded: { appState.profileFlow.setAccount($0, includedInActiveProfile: $1) },
                         onSaveProfile: { appState.profileFlow.saveProfile($0) },
@@ -827,15 +890,28 @@ public struct RootView: View {
         }
         .modifier(AccountSetupOverlay(
             appState: appState, deviceColorScheme: systemColorScheme,
-            presentationEnabled: !showsStartupLogo,
+            presentationEnabled: !showsStartupLogo && !settingsCoverPresented,
             onAppearanceSelected: completeAppearanceIntroductions
         ))
+        .environment(\.settingsPageCoverWrapper, { content in
+            // Sidebar settings live above the root in a native cover, so that
+            // cover must own account setup while retaining its navigation path.
+            AnyView(content
+                .modifier(AccountSetupOverlay(
+                    appState: appState, deviceColorScheme: systemColorScheme,
+                    onAppearanceSelected: completeAppearanceIntroductions
+                ))
+                .onAppear { settingsCoverPresented = true }
+                .onDisappear { settingsCoverPresented = false })
+        })
         .background { AppBackground(palette: resolvedPalette) }
         .environment(\.themePalette, resolvedPalette)
+        .environment(contentRefreshCoordinator)
         .environment(\.managedProviderSetupRouter, providerSetupRouter)
         .onChange(of: appState.profilesModel.activeProfileID) { _, _ in
             providerSetupRouter.addressAccount = nil
             providerSetupRouter.reauthenticationAccount = nil
+            contentRefreshCoordinator.reset()
         }
         .onChange(of: providerSetupRouter.request?.id) { _, _ in
             guard let request = providerSetupRouter.request else { return }
@@ -914,6 +990,8 @@ public struct RootView: View {
         // state without another argument on an already ~60-argument chain.
         .environment(appState.profilesModel)
         .environment(appState.profileSettings.navigationStyleModel)
+        .environment(appState.profileSettings.homeLibraryVisibilityModel)
+        .environment(\.homeContentSnapshot, RuntimeHomeContentSnapshot(appState: appState, models: homeViewModelBox))
         .environment(appState.guidePreparation)
         .environment(glassPerformance)
         .environment(displayVeil)
@@ -936,10 +1014,6 @@ public struct RootView: View {
         .environment(\.colorScheme, resolvedPalette.isLight ? .light : .dark)
         .transientStatusOverlay(
             presenter: appState.transientStatusPresenter,
-            palette: resolvedPalette
-        )
-        .guidePreparationOverlay(
-            model: appState.guidePreparation, presenter: appState.transientStatusPresenter,
             palette: resolvedPalette
         )
         // Resumes setup that was abandoned part-way — quit mid-flow, or synced
@@ -968,10 +1042,6 @@ public struct RootView: View {
             onDismiss: rootPresentationDidDismiss
         ) {
             rootPresentationContent
-                .guidePreparationOverlay(
-                    model: appState.guidePreparation, presenter: appState.transientStatusPresenter,
-                    palette: resolvedPalette
-                )
                 .environment(\.themePalette, resolvedPalette)
                 .environment(\.gradientBackgroundsEnabled, appState.profileSettings.themeModel.gradientEnabled)
                 .environment(\.colorScheme, resolvedPalette.isLight ? .light : .dark)
@@ -1038,6 +1108,9 @@ public struct RootView: View {
                 // invalidation this exists to remove.
                 if systemColorScheme != scheme { systemColorScheme = scheme }
             }
+        )
+        .background(
+            ContentRefreshLifecycleReader(coordinator: contentRefreshCoordinator)
         )
         .background(
             ScenePhaseEffects(
@@ -1201,7 +1274,7 @@ private enum OnboardingPage: Equatable {
     }
 }
 
-private struct OnboardingFlowView: View {
+struct OnboardingFlowView: View {
     let appState: AppState
     let step: OnboardingStep
     let canReturnToApp: Bool
@@ -1254,6 +1327,7 @@ private struct OnboardingFlowView: View {
         .onChange(of: currentPage) { _, newPage in
             enqueue(newPage)
         }
+        .prepareSeerrSetup(appState.seerService)
     }
 
     private var currentPage: OnboardingPage {
@@ -1345,6 +1419,10 @@ private struct OnboardingPageContent: View {
                         throw IPTVAuthViewModel.CompletionError.persistence
                     }
                 },
+                onSubsonicAuthenticated: { [profileID = appState.profilesModel.activeProfileID] session in
+                    guard appState.profilesModel.activeProfileID == profileID else { throw AppError.cancelled }
+                    guard appState.didAuthenticate(session) else { throw AppError.invalidResponse }
+                },
                 onPlexAuthenticatedMany: { sessions in appState.didAuthenticatePlexMany(sessions) },
                 onShareConfigured: { draft in
                     appState.didConfigureShare(
@@ -1405,7 +1483,17 @@ private struct OnboardingPageContent: View {
             )
 
         case let .authenticating(server):
-            if server.provider == .plex {
+            if server.provider == .subsonic {
+                SubsonicSignInView(
+                    deviceID: appState.accountsProviders.deviceID,
+                    address: server.baseURL.absoluteString,
+                    onAuthenticated: { [profileID = appState.profilesModel.activeProfileID] session in
+                        guard appState.profilesModel.activeProfileID == profileID else { throw AppError.cancelled }
+                        guard appState.didAuthenticate(session) else { throw AppError.invalidResponse }
+                    },
+                    onCancel: { appState.cancelAuthentication() }
+                )
+            } else if server.provider == .plex {
                 ProgressView("Finishing Plex sign-in…")
                     .font(.title2)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1573,6 +1661,7 @@ private struct ProfileSetupFlowView: View {
         }
         // Explicitly disable implicit fades between stage enum values.
         .transaction { $0.animation = nil }
+        .prepareSeerrSetup(appState.seerService)
     }
 
     private var showsDetour: Bool {

@@ -543,6 +543,8 @@ public struct MediaItem: Codable, Hashable, Identifiable, Sendable {
     /// from a remote/Tailscale library still plays from a same-LAN copy when one
     /// exists. `false` for every non-picked item (Home / Search / auto default).
     public var explicitSourceSelection: Bool
+    /// Transient proof of a manual file choice, separate from a pinned server or edition.
+    public var explicitVersionSelection: Bool = false
     public init(
         id: String,
         title: String,  // l10n:content — media title (server/provider content)
@@ -1215,6 +1217,7 @@ public struct MediaItem: Codable, Hashable, Identifiable, Sendable {
     public func selectingVersion(_ versionID: String?) -> MediaItem {
         var copy = self
         copy.selectedVersionID = versionID
+        if versionID == nil { copy.explicitVersionSelection = false }
         return copy
     }
 
@@ -1306,6 +1309,7 @@ public struct MediaItem: Codable, Hashable, Identifiable, Sendable {
         } else {
             copy.selectedVersionID = nil
         }
+        copy.explicitVersionSelection = explicit && copy.selectedVersionID != nil
         // Keep proof of an explicit target through the later live-source router,
         // even when the identity index has not learned this physical edition yet.
         if explicit, !copy.sources.contains(where: { $0.id == source.id }) {
@@ -1556,17 +1560,15 @@ public struct MediaItem: Codable, Hashable, Identifiable, Sendable {
         )
     }
 
-    /// The episode's place in the run, comma-separated — `S4, E1`.
+    /// The episode's place in the run — `S4 E1`.
     ///
     /// A tighter sibling of ``subtitle`` for places that already join with `·`,
     /// where the dotted form would produce "S4 · E1 · 22m" and read as three
-    /// separate facts instead of one designation and a duration. The comma keeps
-    /// the season and episode visibly paired — bare "S4 E1 · 22m" runs the two
-    /// numbers together. `nil` unless both are known: a half-built "S4" says
-    /// nothing useful.
+    /// separate facts instead of one designation and a duration.
+    /// `nil` unless both numbers are known.
     public var seasonEpisodeLabel: String? {  // l10n:content — "S"/"E" abbreviations are hand-built formatting, not copy
         guard let season = seasonNumber, let episode = episodeNumber else { return nil }
-        return "S\(season), E\(episode)"
+        return "S\(season) E\(episode)"
     }
 
     /// On-screen / voice talent, in billing order (crew filtered out).

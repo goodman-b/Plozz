@@ -43,7 +43,6 @@ enum PlozziOSHeroArtworkFallback {
 }
 
 enum PlozziOSHeroMetrics {
-    static let compactDetailActionSpacing: CGFloat = 20
     static let detailContentTopInset: CGFloat = 24
 
     /// Whether this hero fills its stage by **mirroring** its own bottom edge
@@ -115,7 +114,16 @@ private struct PlozziOSIsRunningOnMacKey: EnvironmentKey {
     static let defaultValue = ProcessInfo.processInfo.isiOSAppOnMac
 }
 
+private struct PlozziOSHeroFitsLandscapeArtworkKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
+    fileprivate var plozziOSHeroFitsLandscapeArtwork: Bool {
+        get { self[PlozziOSHeroFitsLandscapeArtworkKey.self] }
+        set { self[PlozziOSHeroFitsLandscapeArtworkKey.self] = newValue }
+    }
+
     var plozziOSIsRunningOnMac: Bool {
         get { self[PlozziOSIsRunningOnMacKey.self] }
         set { self[PlozziOSIsRunningOnMacKey.self] = newValue }
@@ -167,7 +175,7 @@ enum PlozziOSPageLayout {
     static func horizontalInset(
         for sizeClass: UserInterfaceSizeClass?, usesDesktopSizing: Bool = false
     ) -> CGFloat {
-        usesDesktopSizing ? DesktopMediaRailLayout.pageInset : (sizeClass == .compact ? 22 : 36)
+        PlozziOSMediaRailLayout.pageInset(for: sizeClass, usesDesktopSizing: usesDesktopSizing)
     }
 
     static func horizontalInset(for style: HeroArtworkStyle) -> CGFloat {
@@ -285,7 +293,7 @@ final class PlozziOSSidebarGeometryModel {
     private(set) var isVisible = false
 
     func recordCoveredWidth(_ width: CGFloat) {
-        guard width > 1, coveredWidth != width else { return }
+        guard width >= 0, width.isFinite, coveredWidth != width else { return }
         coveredWidth = width
     }
 
@@ -411,12 +419,13 @@ struct PlozziOSHeroRequestButton: View {
             .disabled(true)
     }
 
-    @ViewBuilder
     private var requestLabel: some View {
-        if request.isRequesting {
-            ProgressView()
-        } else {
-            Label("Request", systemImage: "plus.circle")
+        Label {
+            Text("Request")
+        } icon: {
+            ActionProgressIcon(
+                systemName: "plus.circle", isLoading: request.isRequesting
+            )
         }
     }
 
@@ -591,7 +600,6 @@ struct PlozziOSHeroStage<Foreground: View>: View {
     @Environment(\.plozziOSIsRunningOnMac) private var isRunningOnMac
     @Environment(\.themePalette) private var palette
     @Environment(\.gradientBackgroundsEnabled) private var gradientEnabled
-    @Environment(\.plozzReduceTransparency) private var reduceTransparency
     @State private var artworkAppearanceID = UUID().uuidString
 
     let item: MediaItem
@@ -667,7 +675,10 @@ struct PlozziOSHeroStage<Foreground: View>: View {
         }
         let background = Group {
             if showsBackdrop {
-                PlozziOSReflectedHeroStage(height: height, ancestorScale: pullScale) { _ in
+                PlozziOSReflectedHeroStage(
+                    height: height, ancestorScale: pullScale,
+                    ignoresGlobalCover: surfaceRole == .detail
+                ) { _ in
                     PlozziOSHeroBackdrop(
                         presentation: presentation,
                         asyncFallbackURL: onlineArtworkFallback,
@@ -731,7 +742,7 @@ struct PlozziOSHeroStage<Foreground: View>: View {
                         )
                         .padding(.bottom, 8)
                         .frame(maxWidth: .infinity)
-                        .background(gradientEnabled && !reduceTransparency ? Color.clear : palette.backgroundBase)
+                        .background(gradientEnabled ? Color.clear : palette.backgroundBase)
                 }
             } else {
                 ZStack {
@@ -892,13 +903,17 @@ private struct PlozziOSHeroPlaybackID: Equatable {
 /// one AVPlayerLayer at a time — so a hero playing a trailer fills the stage with
 /// it instead; see ``PlozziOSHeroBackdrop``.
 struct PlozziOSExtendedHeroArtwork<Picture: View>: View {
+    @Environment(\.plozzReduceTransparency) private var reduceTransparency
+
     /// How far the mirror is drawn up *behind* the picture's bottom edge, so the
     /// two overlap instead of meeting at a line that splits open the moment the
     /// hero is scaled by an overscroll pull. Same reasoning, and same value, as
     /// a Continue Watching card's seam overlap.
     private static var seamOverlap: CGFloat { 2 }
+    private static var topBlurLeadIn: CGFloat { 8 }
 
     let height: CGFloat
+    let surfaceRole: HeroTrailerSurfaceRole
     @ViewBuilder let picture: (PlozziOSHeroPictureLayout) -> Picture
 
     var body: some View {
@@ -912,6 +927,12 @@ struct PlozziOSExtendedHeroArtwork<Picture: View>: View {
             ZStack(alignment: .top) {
                 if topHeight > 0 {
                     topMirror(geometry, width: width, height: topHeight)
+                        .mask {
+                            LinearGradient(
+                                colors: [.white.opacity(0.82), .white],
+                                startPoint: .top, endPoint: .bottom
+                            )
+                        }
                         .environment(\.heroArtworkDisplayReporter, nil)
                 }
                 sizedPicture(geometry)
@@ -920,6 +941,14 @@ struct PlozziOSExtendedHeroArtwork<Picture: View>: View {
                     mirror(geometry, width: width)
                         .environment(\.heroArtworkDisplayReporter, nil)
                         .offset(y: topHeight + geometry.pictureHeight - Self.seamOverlap)
+                }
+            }
+            .overlay(alignment: .top) {
+                if surfaceRole == .home, topHeight > 0, !reduceTransparency {
+                    topReflectionBlur(geometry, width: width, topHeight: topHeight,
+                                      radius: topHeight / 6, from: 0, to: 0.55)
+                    topReflectionBlur(geometry, width: width, topHeight: topHeight,
+                                      radius: topHeight / 2, from: 0.2, to: 1)
                 }
             }
             // Flatten the picture and its mirror into one layer before anyone
@@ -934,7 +963,7 @@ struct PlozziOSExtendedHeroArtwork<Picture: View>: View {
             // where the outgoing slide is drawn at partial opacity. Grouping
             // makes the fade apply once, to the finished picture.
             .compositingGroup()
-            // ONE clip, on the outside. The picture is rendered wider than the
+            // The primary picture and mirrors share this outer clip. The picture is wider than the
             // stage whenever a side trim is in play, and the mirror overruns the
             // foot; both are cut here rather than each carrying its own
             // rasterisation boundary along the seam.
@@ -967,13 +996,35 @@ struct PlozziOSExtendedHeroArtwork<Picture: View>: View {
                 sizedPicture(geometry)
                     .scaleEffect(x: 1, y: -1)
             }
+    }
+
+    private func topReflectionBlur(
+        _ geometry: ExtendedArtworkGeometry, width: CGFloat, topHeight: CGFloat,
+        radius: CGFloat, from start: CGFloat, to end: CGFloat
+    ) -> some View {
+        let halo = ceil(radius * 3)
+        return Color.clear
+            .frame(width: width, height: min(height, topHeight + Self.topBlurLeadIn))
+            .overlay(alignment: .top) {
+                ZStack(alignment: .top) {
+                    topMirror(geometry, width: width, height: topHeight)
+                    sizedPicture(geometry).offset(y: topHeight)
+                }
+            }
+            .environment(\.heroArtworkDisplayReporter, nil)
+            // Filter just the seam and reflected band, including the blur's sampling margin.
+            .padding(halo)
+            .clipped()
+            .blur(radius: radius)
+            .padding(-halo)
             .mask {
                 LinearGradient(
-                    colors: [.white.opacity(0.82), .white],
-                    startPoint: .top,
-                    endPoint: .bottom
+                    stops: ArtworkGradientRamp.stops(peak: 1, from: start, to: end),
+                    startPoint: .bottom, endPoint: .top
                 )
             }
+            // Keep the reflection's existing alpha instead of stacking extra opacity.
+            .blendMode(.sourceAtop)
     }
 
     /// The band under the picture: the same image flipped, so its top row is the
@@ -1026,6 +1077,7 @@ struct PlozziOSHeroPictureLayout {
 
 struct PlozziOSHeroArtworkImage: View {
     @Environment(\.plozziOSIsRunningOnMac) private var isRunningOnMac
+    @Environment(\.plozziOSHeroFitsLandscapeArtwork) private var fitsLandscapeArtwork
     let image: Image
     let style: HeroArtworkStyle
     var surfaceRole: HeroTrailerSurfaceRole = .home
@@ -1039,6 +1091,8 @@ struct PlozziOSHeroArtworkImage: View {
                     .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
                     .clipped()
             }
+        } else if fitsLandscapeArtwork, style == .landscape, surfaceRole == .home {
+            ExtendedArtworkFill(image: image, sideCrop: 0)
         } else {
             ArtworkFillImage(image)
         }
@@ -1069,7 +1123,7 @@ private struct PlozziOSHeroBackdrop: View {
     var body: some View {
         ZStack {
             if extendsArtwork {
-                PlozziOSExtendedHeroArtwork(height: height) { layout in
+                PlozziOSExtendedHeroArtwork(height: height, surfaceRole: surfaceRole) { layout in
                     stillArtwork()
                         .frame(width: layout.width, height: layout.height)
                         .clipped()
@@ -1512,7 +1566,8 @@ struct PlozziOSHomeStaticBackdrop: View {
         }
         PlozziOSReflectedHeroStage(
             height: height,
-            ancestorScale: ancestorScale
+            ancestorScale: ancestorScale,
+            usesNativeBackgroundExtension: false
         ) { usableWidth in
             if usesSlidingArtwork {
                 slidingArtwork(
@@ -1549,7 +1604,8 @@ struct PlozziOSHomeStaticBackdrop: View {
                 width: reflectionWidth,
                 contentWidth: contentWidth,
                 height: height,
-                trailerController: trailerController
+                trailerController: trailerController,
+                showsTrailer: showsTrailer
             )
         }
     }
@@ -1567,7 +1623,7 @@ struct PlozziOSHomeStaticBackdrop: View {
         width: CGFloat
     ) -> some View {
         if extendsArtwork {
-            PlozziOSExtendedHeroArtwork(height: height) { layout in
+            PlozziOSExtendedHeroArtwork(height: height, surfaceRole: .home) { layout in
                 PlozziOSSlidingHeroArtwork(
                     presentation: presentation,
                     style: style,
@@ -1626,6 +1682,7 @@ private struct PlozziOSSlidingHeroArtwork: View {
     private var artwork: some View {
         FallbackAsyncImage(
             references: presentation.artworkReferences(settings: artworkPolicy.settings, in: artworkPolicy.area),
+            prefersLandscape: style != .compactPortrait,
             maxAspectRatio: 3,
             variant: .heroBackdrop,
             previewVariant: .heroPreview,
@@ -1648,6 +1705,7 @@ private struct PlozziOSSlidingHeroArtwork: View {
     private func mirroredEdge(alignment: Alignment) -> some View {
         FallbackAsyncImage(
             references: presentation.artworkReferences(settings: artworkPolicy.settings, in: artworkPolicy.area),
+            prefersLandscape: style != .compactPortrait,
             maxAspectRatio: 3,
             variant: .heroBackdrop,
             previewVariant: .heroPreview,
@@ -1684,11 +1742,13 @@ private struct PlozziOSHeroReflection: View {
     let height: CGFloat
     let trailerController: HeroTrailerController
     var surfaceRole: HeroTrailerSurfaceRole = .home
+    var showsTrailer = true
 
     var body: some View {
         ZStack {
             FallbackAsyncImage(
                 references: presentation.artworkReferences(settings: artworkPolicy.settings, in: artworkPolicy.area),
+                prefersLandscape: style != .compactPortrait,
                 maxAspectRatio: 3,
                 variant: .heroBackdrop,
                 previewVariant: .heroPreview,
@@ -1705,7 +1765,7 @@ private struct PlozziOSHeroReflection: View {
             }
             .frame(width: contentWidth, height: height)
 
-            if trailerController.isShowing(itemID),
+            if showsTrailer, trailerController.isShowing(itemID),
                trailerController.isPlaying {
                 PlozziOSMirrorVideoLayer(
                     player: trailerController.player
@@ -2206,7 +2266,6 @@ struct PlozziOSDetailHeroForeground: View {
                 stackedActionRows(actions: entries)
             }
             .controlSize(.large)
-            .padding(.top, style == .compactPortrait ? PlozziOSHeroMetrics.compactDetailActionSpacing : 0)
         }
         .frame(
             maxWidth: PlozziOSPageLayout.heroTextMaxWidth(for: style),
@@ -2638,6 +2697,7 @@ struct PlozziOSHeroActionButtonStyle: PrimitiveButtonStyle {
     @Environment(\.themePalette) private var palette
     @Environment(\.plozzReducePanelGlass) private var reducePanelGlass
     @Environment(\.plozzReduceTransparency) private var reduceTransparency
+    @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {
         if #available(iOS 26.0, *), !reducePanelGlass, !reduceTransparency {
@@ -2673,7 +2733,8 @@ struct PlozziOSHeroActionButtonStyle: PrimitiveButtonStyle {
                 .font(.headline.weight(.semibold))
                 .lineLimit(nil)
                 .fixedSize(horizontal: false, vertical: true)
-                .foregroundStyle(kind == .primary ? palette.backgroundBase : palette.primaryText)
+                .foregroundStyle(nativeForeground)
+                .tint(nativeForeground)
                 // Keep the native icon slot stable even for short glyphs such as ellipsis.
                 .frame(width: circular ? 18 : nil, height: circular ? 18 : nil)
         }
@@ -2686,6 +2747,10 @@ struct PlozziOSHeroActionButtonStyle: PrimitiveButtonStyle {
         } else {
             button.buttonStyle(.glass)
         }
+    }
+
+    private var nativeForeground: Color {
+        kind == .primary && isEnabled ? palette.backgroundBase : palette.primaryText
     }
 }
 
@@ -2898,11 +2963,14 @@ struct PlozziOSHeroMetadata: View {
                             : .leading
                     )
                 } else if mode == .detail, usesCompactDetailLayout {
-                    DetailHeaderMetadataRow(
-                        ratings: effectiveRatings,
-                        badges: effectiveTechnicalBadges,
-                        familyGuidanceAge: effectiveFamilyGuidanceAge
-                    )
+                    if !effectiveRatings.isEmpty || !effectiveTechnicalBadges.isEmpty || effectiveFamilyGuidanceAge != nil {
+                        DetailHeaderMetadataRow(
+                            ratings: effectiveRatings,
+                            badges: effectiveTechnicalBadges,
+                            familyGuidanceAge: effectiveFamilyGuidanceAge
+                        )
+                        .padding(.vertical, 8)
+                    }
                 } else if mode == .detail,
                     !factComponents.isEmpty
                         || !effectiveRatings.isEmpty
@@ -3121,7 +3189,11 @@ struct PlozziOSHeroAudioMuteToolbarButton: View {
 
     var body: some View {
         Button(action: onToggle) {
-            Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            Label {
+                Text(source.label(isMuted: isMuted))
+            } icon: {
+                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            }
         }
         .accessibilityLabel(Text(source.label(isMuted: isMuted)))
         .accessibilityIdentifier(source == .themeMusic ? "theme-music-mute" : "trailer-mute")
@@ -3214,6 +3286,8 @@ private struct PlozziOSReflectedHeroStage<
 
     let height: CGFloat
     var ancestorScale: CGFloat = 1
+    var usesNativeBackgroundExtension = true
+    var ignoresGlobalCover = false
     @ViewBuilder let content: (CGFloat) -> Content
     @ViewBuilder let reflection: (CGFloat, CGFloat) -> Reflection
 
@@ -3222,22 +3296,20 @@ private struct PlozziOSReflectedHeroStage<
             let scaledGlobalMinX = proxy.frame(in: .global).minX
             let horizontalScaleGrowth = proxy.size.width
                 * (max(ancestorScale, 1) - 1) / 2
-            let globalMinX = scaledGlobalMinX + horizontalScaleGrowth
-            let width = windowWidth ?? proxy.size.width
-            let locallyCoveredWidth = max(
-                proxy.safeAreaInsets.leading,
-                globalMinX
-            )
-            let coveredWidth = max(
+            // A detail's moving navigation frame is not sidebar occlusion.
+            let globalMinX = ignoresGlobalCover ? 0 : scaledGlobalMinX + horizontalScaleGrowth
+            let width = ignoresGlobalCover ? proxy.size.width : (windowWidth ?? proxy.size.width)
+            let locallyCoveredWidth = ignoresGlobalCover
+                ? 0 : max(proxy.safeAreaInsets.leading, globalMinX)
+            let coveredWidth = ignoresGlobalCover ? 0 : max(
                 locallyCoveredWidth,
-                sidebarGeometry.isVisible
-                    ? sidebarGeometry.coveredWidth
-                    : 0
+                sidebarGeometry.isVisible ? sidebarGeometry.coveredWidth : 0
             )
             let usableWidth = max(width - coveredWidth, 1)
             let mainOffset = coveredWidth - globalMinX
             ZStack(alignment: .topLeading) {
-                if #available(iOS 26.0, *), coveredWidth > 0 {
+                if #available(iOS 26.0, *),
+                   usesNativeBackgroundExtension || !sidebarGeometry.isVisible, coveredWidth > 0 {
                     content(usableWidth)
                         .frame(width: usableWidth, height: height)
                         .backgroundExtensionEffect()
@@ -3254,9 +3326,15 @@ private struct PlozziOSReflectedHeroStage<
                 }
 
             }
+            .environment(
+                \.plozziOSHeroFitsLandscapeArtwork,
+                sidebarGeometry.isVisible && (ignoresGlobalCover ? sidebarGeometry.coveredWidth : coveredWidth) > 0
+            )
             .onChange(of: locallyCoveredWidth, initial: true) {
                 _, locallyCoveredWidth in
-                sidebarGeometry.recordCoveredWidth(locallyCoveredWidth)
+                if #unavailable(iOS 26.0), !ignoresGlobalCover, locallyCoveredWidth > 1 {
+                    sidebarGeometry.recordCoveredWidth(locallyCoveredWidth)
+                }
             }
             .overlay {
                 PlozziOSWindowWidthReader { measuredWidth in
@@ -3468,6 +3546,7 @@ struct PlozziOSHomeSidebarOverlapProbe: UIViewControllerRepresentable {
         private var previousStandardAppearance: UITabBarAppearance?
         private var previousScrollEdgeAppearance: UITabBarAppearance?
         private var didApplyTransparency = false
+        private var geometryView: GeometryView?
 
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
@@ -3483,6 +3562,11 @@ struct PlozziOSHomeSidebarOverlapProbe: UIViewControllerRepresentable {
             }
         }
 
+        override func viewSafeAreaInsetsDidChange() {
+            super.viewSafeAreaInsetsDidChange()
+            if enabled { apply() }
+        }
+
         func apply() {
             guard enabled, let tabs = tabBarController else {
                 restore()
@@ -3496,6 +3580,22 @@ struct PlozziOSHomeSidebarOverlapProbe: UIViewControllerRepresentable {
                 previousScrollEdgeAppearance =
                     tabs.tabBar.scrollEdgeAppearance
                 didApplyTransparency = false
+                if #available(iOS 26.0, *) {
+                    let geometryView = GeometryView()
+                    geometryView.probe = self
+                    geometryView.isUserInteractionEnabled = false
+                    geometryView.accessibilityElementsHidden = true
+                    geometryView.translatesAutoresizingMaskIntoConstraints = false
+                    tabs.view.addSubview(geometryView)
+                    let guide = tabs.contentLayoutGuide
+                    NSLayoutConstraint.activate([
+                        geometryView.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+                        geometryView.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+                        geometryView.topAnchor.constraint(equalTo: guide.topAnchor),
+                        geometryView.bottomAnchor.constraint(equalTo: guide.bottomAnchor)
+                    ])
+                    self.geometryView = geometryView
+                }
             }
             if !didApplyTransparency {
                 didApplyTransparency = true
@@ -3509,12 +3609,24 @@ struct PlozziOSHomeSidebarOverlapProbe: UIViewControllerRepresentable {
                 tabs.tabBar.scrollEdgeAppearance = transparentAppearance
                 tabs.tabBar.isTranslucent = true
             }
-            geometryModel?.setVisible(!tabs.sidebar.isHidden)
+            if #available(iOS 26.0, *), let window = tabs.view.window {
+                let contentFrame = tabs.view.convert(tabs.contentLayoutGuide.layoutFrame, to: window)
+                geometryModel?.recordCoveredWidth(max(0, contentFrame.minX))
+            }
+            let available: Bool
+            if #available(iOS 27.0, *) {
+                available = tabs.sidebar.isAvailable
+            } else {
+                available = true
+            }
+            geometryModel?.setVisible(available && !tabs.sidebar.isHidden)
         }
 
         func restore() {
             geometryModel?.setVisible(false)
             didApplyTransparency = false
+            geometryView?.removeFromSuperview()
+            geometryView = nil
             guard let owner else { return }
             owner.sidebar.preferredLayout = previousLayout ?? .automatic
             if let previousStandardAppearance {
@@ -3525,6 +3637,37 @@ struct PlozziOSHomeSidebarOverlapProbe: UIViewControllerRepresentable {
             previousLayout = nil
             previousStandardAppearance = nil
             previousScrollEdgeAppearance = nil
+        }
+
+        /// Observe the public guide without replacing SwiftUI's sidebar delegate.
+        final class GeometryView: UIView {
+            weak var probe: ProbeController?
+            private var reportPending = false
+
+            override var frame: CGRect {
+                didSet { if frame != oldValue { report() } }
+            }
+
+            override func layoutSubviews() {
+                super.layoutSubviews()
+                report()
+            }
+
+            override func didMoveToWindow() {
+                super.didMoveToWindow()
+                report()
+            }
+
+            private func report() {
+                guard window != nil, !reportPending else { return }
+                reportPending = true
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    reportPending = false
+                    guard window != nil else { return }
+                    probe?.apply()
+                }
+            }
         }
     }
 }

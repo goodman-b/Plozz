@@ -41,6 +41,10 @@ and every provider/feature that talks to a remote server.
   Manual media-server discovery uses its separate candidate builder; legacy
   normalization of persisted/service URLs is unchanged. Discovery opts into
   typed TLS trust failures so an invalid certificate cannot select HTTP instead.
+  Generic TLS negotiation failures remain transport errors: probing an HTTP-only
+  port with HTTPS does not imply a rejected certificate. Manual Jellyfin/Emby
+  discovery handles those and ordinary connectivity errors before trying its
+  remaining credential-free candidates; explicit HTTPS never tries HTTP.
 - `ProviderIconLoader`: best-effort, origin-only `/favicon.ico` requests for
   provider marks. It strips user information, paths, query strings and fragments,
   uses no credential/cookie storage, rejects redirects and authentication,
@@ -51,6 +55,11 @@ and every provider/feature that talks to a remote server.
   sessions are paused by their download owner rather than a URL protocol.
   This is not an internet-reachability heuristic: normal mode still permits
   saved LAN routes when the public internet is unavailable.
+- `SubtitleFileLoader`: bounded, uncached text-subtitle delivery with redirect,
+  byte-limit, cancellation, and network-policy safeguards. Ordinary sidecars use
+  a 30-second request / 60-second resource budget. Embedded-track extraction opts
+  into a separate 120-second request/resource budget for a server's initial scan;
+  it does not add automatic retries or extend ordinary sidecar requests.
 - `PlozzLog` (and the `PlozzLogger` category facade): the **single** logging
   entry point. Backed by `OSLog` on Apple platforms, no-op on non-Apple
   hosts. Must never log tokens, Quick Connect secrets, or full

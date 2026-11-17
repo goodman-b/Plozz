@@ -143,7 +143,7 @@ public struct TMDbMetadataProvider: ArtworkProvider {
         guard access.isEnabled,
               query.contentType != .music,
               let id = await resolveID(for: query) else {
-            return ExternalTitleAvailability(regionCode: region)
+            return ExternalTitleAvailability(regionCode: region, releaseDatesAvailable: false)
         }
 
         async let offers = watchOffers(
@@ -164,9 +164,10 @@ public struct TMDbMetadataProvider: ArtworkProvider {
         let (events, resolvedOffers) = await (releaseDates, offers)
         return ExternalTitleAvailability(
             regionCode: region,
-            releaseEvents: events,
+            releaseEvents: events ?? [],
             watchOffers: resolvedOffers.offers,
-            watchProvidersURL: resolvedOffers.link
+            watchProvidersURL: resolvedOffers.link,
+            releaseDatesAvailable: events != nil
         )
     }
 
@@ -385,17 +386,18 @@ public struct TMDbMetadataProvider: ArtworkProvider {
               let id = try await detailID(for: query) else { return MetadataEnrichment() }
         var result = MetadataEnrichment()
         if !missing.isDisjoint(with: [.cast, .directors, .writers, .producers, .composers]),
-           let path = Self.creditsPath(id: id, query: query), let url = url(path),
+           let path = Self.creditsPath(id: id, query: query),
+           let url = url(path, language: query.metadataLanguage),
            let credits = try await detailResponse(CreditsResponse.self, url: url) {
             result = Self.creditMetadata(credits, missing: missing, sourceURL: url)
         }
         try Task.checkCancellation()
         if !missing.isDisjoint(with: [
-            .genres, .studios, .taglines, .overview,
+            .title, .genres, .studios, .taglines, .overview,
             .originalLanguage, .seriesStatus, .catalogSeasonCount, .catalogEpisodeCount
         ]) {
             let base = "/3/\(query.isTV ? "tv" : "movie")/\(id)"
-            if let url = url(base),
+            if let url = url(base, language: query.metadataLanguage),
                let facts = try await detailResponse(DetailFacts.self, url: url) {
                 if missing.contains(.genres), let values = Self.names(facts.genres) {
                     result.genres = SourcedValue(value: values, source: .tmdb, sourceURL: url)
@@ -404,6 +406,9 @@ public struct TMDbMetadataProvider: ArtworkProvider {
                     result.studios = SourcedValue(value: values, source: .tmdb, sourceURL: url)
                 }
                 if query.kind == .movie || query.kind == .series || query.kind == .video {
+                    if missing.contains(.title), let title = (facts.title ?? facts.name)?.tmdbNonEmpty {
+                        result.title = SourcedValue(value: title, source: .tmdb, sourceURL: url)
+                    }
                     if missing.contains(.originalLanguage),
                        let language = facts.original_language?.tmdbNonEmpty,
                        !["xx", "und", "zxx", "mul"].contains(language.lowercased()),
@@ -432,7 +437,7 @@ public struct TMDbMetadataProvider: ArtworkProvider {
             }
             if missing.contains(.overview), query.kind == .episode || query.kind == .season,
                let creditsPath = Self.creditsPath(id: id, query: query),
-               let url = url(String(creditsPath.dropLast("/credits".count))),
+               let url = url(String(creditsPath.dropLast("/credits".count)), language: query.metadataLanguage),
                let facts = try await detailResponse(DetailFacts.self, url: url),
                let text = facts.overview?.tmdbNonEmpty {
                 result.overview = SourcedValue(value: text, source: .tmdb, sourceURL: url)
@@ -501,7 +506,7 @@ public struct TMDbMetadataProvider: ArtworkProvider {
         for (namespace, source) in [(ProviderIDNamespace.imdb, "imdb_id"), (.tvdb, "tvdb_id")] {
             guard let externalID = scoped.providerIDs.providerID(namespace) else { continue }
             guard let escaped = externalID.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
-                  let url = url("/3/find/\(escaped)?external_source=\(source)"),
+                  let url = url("/3/find/\(escaped)?external_source=\(source)", language: query.metadataLanguage),
                   let response = try await detailResponse(FindResponse.self, url: url),
                   let result = (query.isTV ? response.tv_results : response.movie_results)?.first,
                   let id = result.id, id > 0 else { return nil }
@@ -511,14 +516,20 @@ public struct TMDbMetadataProvider: ArtworkProvider {
               let escaped = metadataEscaped(query.title) else { return nil }
         var path = "/3/search/\(query.isTV ? "tv" : "movie")?query=\(escaped)&include_adult=false"
         if let year = query.year { path += "&\(query.isTV ? "first_air_date_year" : "year")=\(year)" }
-        guard let url = url(path),
-              let results = try await detailResponse(SearchResponse.self, url: url)?.results,
-              let match = Self.bestMatch(for: query, among: results),
-              let name = match.displayTitle,
-              MediaItemIdentity.normalizedTitle(name) == MediaItemIdentity.normalizedTitle(query.title),
-              query.year == nil || match.year == query.year,
-              let id = match.id else { return nil }
-        return String(id)
+        // Identity can be an English release alias even when neither the localized
+        // display title nor the original-language title matches it.
+        let languages = query.metadataLanguage == "en" ? ["en"] : [query.metadataLanguage, "en"]
+        for language in languages {
+            try Task.checkCancellation()
+            guard let url = url(path, language: language),
+                  let results = try await detailResponse(SearchResponse.self, url: url)?.results,
+                  let match = Self.bestMatch(for: query, among: results),
+                  match.matches(normalizedTitle: MediaItemIdentity.normalizedTitle(query.title)),
+                  query.year == nil || match.year == query.year,
+                  let id = match.id, id > 0 else { continue }
+            return String(id)
+        }
+        return nil
     }
 
     private func detailResponse<Value: Decodable & Sendable>(_ type: Value.Type, url: URL) async throws -> Value? {
@@ -635,10 +646,7 @@ public struct TMDbMetadataProvider: ArtworkProvider {
     static func bestMatch(for query: MetadataQuery, among results: [SearchResult]) -> SearchResult? {
         let wanted = MediaItemIdentity.normalizedTitle(query.title)
         guard !wanted.isEmpty else { return results.first }
-        let exact = results.filter {
-            guard let title = $0.displayTitle else { return false }
-            return MediaItemIdentity.normalizedTitle(title) == wanted
-        }
+        let exact = results.filter { $0.matches(normalizedTitle: wanted) }
         guard !exact.isEmpty else { return results.first }
         if let year = query.year, let dated = exact.first(where: { $0.year == year }) {
             return dated
@@ -654,14 +662,14 @@ public struct TMDbMetadataProvider: ArtworkProvider {
     private func movieReleaseDates(
         id: String,
         regionCode: String
-    ) async -> [TitleReleaseEvent] {
+    ) async -> [TitleReleaseEvent]? {
         guard let url = url("/3/movie/\(id)/release_dates"),
               let response = await MetadataHTTP.get(
                   ReleaseDatesResponse.self,
                   url: url,
                   headers: authHeaders
-              ),
-              let region = response.results.first(where: {
+              ) else { return nil }
+        guard let region = response.results.first(where: {
                   $0.iso_3166_1?.uppercased() == regionCode
               }) else { return [] }
 
@@ -758,8 +766,14 @@ public struct TMDbMetadataProvider: ArtworkProvider {
 
     /// Builds a TMDb API URL against `apiBase`, attaching the bearer token only in
     /// direct-token mode (the proxy injects auth itself).
-    private func url(_ path: String) -> URL? {
-        URL(string: apiBase + path)
+    private func url(_ path: String, language: String? = nil) -> URL? {
+        guard var components = URLComponents(string: apiBase + path) else { return nil }
+        if let language {
+            components.queryItems = (components.queryItems ?? []) + [
+                URLQueryItem(name: "language", value: language)
+            ]
+        }
+        return components.url
     }
 
     // MARK: - Selection (pure, shared with the legacy resolver's logic)
@@ -800,7 +814,7 @@ public struct TMDbMetadataProvider: ArtworkProvider {
             if normalized == preferred { return 0 }
             return normalized == "en" ? 2 : 3
         }
-        guard let path = logos.lazy.filter({ $0.file_path?.isEmpty == false }).min(by: {
+        guard let path = logos.lazy.filter({ $0.file_path?.isEmpty == false && rank($0) < 3 }).min(by: {
             let (lr, rr) = (rank($0), rank($1))
             if lr != rr { return lr < rr }
             return ($0.vote_average ?? 0) > ($1.vote_average ?? 0)
@@ -826,9 +840,17 @@ public struct TMDbMetadataProvider: ArtworkProvider {
         let release_date: String?
         let first_air_date: String?
         let original_language: String?
+        var original_title: String? = nil
+        var original_name: String? = nil
 
         var displayTitle: String? { title ?? name }
         var year: Int? { Int((release_date ?? first_air_date)?.prefix(4) ?? "") }
+
+        func matches(normalizedTitle: String) -> Bool {
+            [title, name, original_title, original_name].compactMap { $0 }.contains {
+                MediaItemIdentity.normalizedTitle($0) == normalizedTitle
+            }
+        }
     }
     struct OriginalLanguageResponse: Decodable {
         let original_language: String?
@@ -878,6 +900,8 @@ public struct TMDbMetadataProvider: ArtworkProvider {
         let job: String?
     }
     struct DetailFacts: Decodable, Sendable {
+        let title: String?
+        let name: String?
         let overview: String?
         let tagline: String?
         let genres: [NamedFact]?

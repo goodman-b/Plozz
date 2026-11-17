@@ -38,6 +38,8 @@ struct ProductionHomeFixture: View {
     @State private var expectedNativeDestination: NavigationRailDestination?
     @State private var prematureNativeHomeFocusCount = 0
     @State private var nativeSidebarFocus = NavigationDestinationFocusHandoff()
+    @State private var nativeSelectionCount = 0
+    @State private var nativeSidebarScroll = TopNavigationScroll()
     @State private var nativeFocusHistory: [String] = []
     @State private var heroBoundaryLatencyReport = "waiting"
 
@@ -81,7 +83,10 @@ struct ProductionHomeFixture: View {
                             content: TabView(selection: Binding(
                             get: { selection },
                             set: { destination in
-                                if destination != selection { nativeSidebarFocus.begin(destination) }
+                                nativeSelectionCount += 1
+                                let reselectsHome = destination == .home && destination == selection
+                                if reselectsHome { nativeSidebarScroll.scrollToTop() }
+                                if reselectsHome || destination != selection { nativeSidebarFocus.begin(destination) }
                                 selection = destination
                             }
                         )) {
@@ -92,6 +97,7 @@ struct ProductionHomeFixture: View {
                                     fixture: fixture, path: $path, libraryPath: $libraryPath, isPinned: false,
                                     isActive: selection == .home
                                 )
+                                .environment(\.plozzTopNavigationScroll, nativeSidebarScroll)
                                 .background {
                                     // Native tabs can share a hosting ancestor. Keep the
                                     // measured hero region disjoint from Settings' target.
@@ -129,6 +135,8 @@ struct ProductionHomeFixture: View {
                                     .accessibilityIdentifier("native-production-armed")
                                 Text("\(prematureNativeHomeFocusCount)")
                                     .accessibilityIdentifier("native-production-premature-focus")
+                                Text("\(nativeSelectionCount)")
+                                    .accessibilityIdentifier("native-production-selection-count")
                             }
                             .allowsHitTesting(false)
                         }
@@ -1089,6 +1097,14 @@ private struct ProductionHomeContent: View {
                     .navigationDestination(for: HomeBrowseDestination.self) { destination in
                         Group {
                             switch destination {
+                            case .upcoming:
+                                UpcomingView(
+                                    model: fixture.model.upcoming,
+                                    interval: DateInterval(
+                                        start: Date().addingTimeInterval(-30 * 86_400),
+                                        end: Date().addingTimeInterval(90 * 86_400)
+                                    )
+                                )
                             case let .row(browser):
                                 HomeRowBrowseView(model: browser, columns: PlozzMetrics.standard.posterColumns) { item in
                                     PosterCardView(item: item, style: .poster) {
@@ -1254,6 +1270,7 @@ private final class ProductionHomeState {
             )
         }
         let libraryRows = ProcessInfo.processInfo.arguments.contains("--progressive-library-rows")
+            || ProcessInfo.processInfo.arguments.contains("--short-showcase-rows")
         if libraryRows { visibility.useRowDefaults(.legacy) }
         visibility.setMergeLibrariesOnHome(!libraryRows)
         for row in HomeGlobalRow.allCases {
@@ -1544,7 +1561,8 @@ private struct ProductionHomeProvider: MediaProvider, WatchlistProviding {
             : discoverGate
         await gate.wait()
         guard !Task.isCancelled else { return [] }
-        return Array((rowCount..<(rowCount * 2)).prefix(limit).map(movie))
+        let start = ProcessInfo.processInfo.arguments.contains("--discovery-short-row") ? rowCount * 20 : rowCount
+        return Array((start..<(start + rowCount)).prefix(limit).map(movie))
     }
 
     static func artworkURL(_ base: URL, index: Int) -> URL {
@@ -1617,8 +1635,9 @@ private struct ProductionHomeProvider: MediaProvider, WatchlistProviding {
     }
 
     func libraries() async throws -> [MediaLibrary] {
-        guard ProcessInfo.processInfo.arguments.contains("--progressive-library-rows") else { return [] }
-        let count = ProcessInfo.processInfo.arguments.contains("--populated-home-return") ? 8 : 20
+        let shortRows = ProcessInfo.processInfo.arguments.contains("--short-showcase-rows")
+        guard shortRows || ProcessInfo.processInfo.arguments.contains("--progressive-library-rows") else { return [] }
+        let count = shortRows ? 7 : ProcessInfo.processInfo.arguments.contains("--populated-home-return") ? 8 : 20
         return (0..<count).map {
             MediaLibrary(id: "fixture-library-\($0)", title: "Fixture library \($0)", kind: .movie)
         }
@@ -1672,6 +1691,7 @@ private struct ProductionHomeProvider: MediaProvider, WatchlistProviding {
         if id == series.id { return series }
         if id == season.id { return season }
         let count = ProcessInfo.processInfo.arguments.contains("--progressive-library-rows")
+            || ProcessInfo.processInfo.arguments.contains("--short-showcase-rows")
             ? rowCount + 400 : rowCount * 2
         guard let index = Int(id.split(separator: "-").last ?? ""), (0..<count).contains(index) else {
             throw AppError.notFound
@@ -1717,9 +1737,13 @@ private struct ProductionHomeProvider: MediaProvider, WatchlistProviding {
             await recentGate.wait()
         }
         let start = rowCount + index * 20
+        let count = ProcessInfo.processInfo.arguments.contains("--discovery-short-row")
+            ? (index == 0 ? 1 : 20)
+            : ProcessInfo.processInfo.arguments.contains("--short-showcase-rows") && !index.isMultiple(of: 2)
+                ? index / 2 + 1 : 20
         return MediaPage(
-            items: Array((start..<(start + 20)).prefix(page.limit).map(movie)),
-            startIndex: page.startIndex, totalCount: 20
+            items: Array((start..<(start + count)).prefix(page.limit).map(movie)),
+            startIndex: page.startIndex, totalCount: count
         )
     }
 
