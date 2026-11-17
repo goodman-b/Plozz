@@ -38,6 +38,14 @@ jobs:
         env:
           PLATFORM: ${{ matrix.platform }}
         run: tools/build-unsigned-ipa.sh "$PLATFORM"
+      - name: Upload build logs on failure (personal fork debug aid)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Plozz-${{ matrix.platform }}-failure-logs
+          path: .build/unsigned-ipa/**/*.log
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Upload unsigned IPA and provenance
         uses: actions/upload-artifact@v4
         with:
